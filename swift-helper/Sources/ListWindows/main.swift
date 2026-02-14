@@ -328,35 +328,39 @@ func closeWindow(pid: pid_t, windowIndex: Int) {
     let (realWIDs, _, realWindowCountByPid) = cgWindowScan()
     let expectedCount = realWindowCountByPid[pid] ?? 0
     let windows = allWindows(for: pid, realWIDs: realWIDs, expectedCount: expectedCount)
-    
+
     if windowIndex >= windows.count {
         print("{\"success\":false,\"error\":\"Window not found\"}")
         return
     }
-    
+
     let window = windows[windowIndex].element
     let app = NSRunningApplication(processIdentifier: pid)
-    
+
     // Get the window ID for later verification
     guard let targetWindowID = getWindowID(of: window) else {
         print("{\"success\":false,\"error\":\"Could not get window ID\"}")
         return
     }
-    
+
     // Strategy 1: Try clicking the close button
     var closeButtonValue: AnyObject?
     let err = AXUIElementCopyAttributeValue(
         window, kAXCloseButtonAttribute as CFString, &closeButtonValue)
     if err == .success, let closeButton = closeButtonValue {
         AXUIElementPerformAction(closeButton as! AXUIElement, kAXPressAction as CFString)
-        usleep(200000) // 200ms - wait before verifying
-        
+        usleep(200000)  // 200ms - wait before verifying
+
         if !windowExists(targetWindowID, pid: pid) {
+            // If this was the last window, terminate the app to prevent it staying in dock
+            if windows.count == 1, let app = app {
+                app.terminate()
+            }
             print("{\"success\":true,\"method\":\"closeButton\"}")
             return
         }
     }
-    
+
     // Strategy 2: Try AppleScript - more reliable for terminal emulators
     if let app = app, let bundleId = app.bundleIdentifier {
         // Use window title to identify the correct window, since AX enumeration
@@ -370,22 +374,26 @@ func closeWindow(pid: pid_t, windowIndex: Int) {
             var scriptError: NSDictionary?
             appleScript.executeAndReturnError(&scriptError)
             if scriptError == nil {
-                usleep(200000) // 200ms - verify the window actually closed
+                usleep(200000)  // 200ms - verify the window actually closed
                 if !windowExists(targetWindowID, pid: pid) {
+                    // If this was the last window, terminate the app to prevent it staying in dock
+                    if windows.count == 1 {
+                        app.terminate()
+                    }
                     print("{\"success\":true,\"method\":\"applescript\"}")
                     return
                 }
             }
         }
     }
-    
+
     // Strategy 3: If it's the only window, terminate the app
     if windows.count == 1, let app = app {
         app.terminate()
         print("{\"success\":true,\"method\":\"terminate\"}")
         return
     }
-    
+
     print("{\"success\":false,\"error\":\"All close methods failed\"}")
 }
 
