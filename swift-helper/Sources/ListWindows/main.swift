@@ -99,9 +99,12 @@ func windowsByBruteForce(for pid: pid_t) -> [AXUIElement] {
 
     var results: [AXUIElement] = []
     let startTime = CFAbsoluteTimeGetCurrent()
+    var consecutiveMisses = 0
 
-    // Try element IDs 0, 1, 2, 3... until we hit 500 or spend 50ms
+    // Try element IDs 0, 1, 2, 3... until we hit 500, spend 50ms, or
+    // see 50 consecutive misses (IDs cluster in low numbers, so gaps mean we're done).
     for elementId: AXUIElementID in 0..<500 {
+        if consecutiveMisses > 50 { break }  // No more elements likely exist
         if CFAbsoluteTimeGetCurrent() - startTime > 0.05 { break }  // Don't spend more than 50ms per app
 
         // Update the token with this element ID
@@ -113,8 +116,10 @@ func windowsByBruteForce(for pid: pid_t) -> [AXUIElement] {
             let axElement = _AXUIElementCreateWithRemoteToken(remoteToken as CFData)?
                 .takeRetainedValue()
         else {
+            consecutiveMisses += 1
             continue  // This element ID doesn't exist, try next number
         }
+        consecutiveMisses = 0
 
         // Check if this element is a window (not a button, menu, tab, etc.)
         var subroleValue: AnyObject?
@@ -134,17 +139,22 @@ func windowsByBruteForce(for pid: pid_t) -> [AXUIElement] {
 // Single pass over CGWindowList to get:
 // - realWIDs: windows assigned to a Space (actual windows, not browser tabs)
 // - pidsWithWindows: which PIDs have windows, so we can skip brute-forcing the rest
-func cgWindowScan() -> (realWIDs: Set<CGWindowID>, pidsWithWindows: Set<pid_t>) {
+// - realWindowCountByPid: how many real windows each PID owns (used to skip brute-force)
+func cgWindowScan() -> (
+    realWIDs: Set<CGWindowID>, pidsWithWindows: Set<pid_t>,
+    realWindowCountByPid: [pid_t: Int]
+) {
     let conn = CGSMainConnectionID()
     var realWIDs = Set<CGWindowID>()
     var pidsWithWindows = Set<pid_t>()
+    var realWindowCountByPid: [pid_t: Int] = [:]
 
     guard
         let windowInfoList = CGWindowListCopyWindowInfo(
             [.optionAll, .excludeDesktopElements],
             kCGNullWindowID
         ) as? [[String: Any]]
-    else { return (realWIDs, pidsWithWindows) }
+    else { return (realWIDs, pidsWithWindows, realWindowCountByPid) }
 
     for info in windowInfoList {
         guard let wid = info[kCGWindowNumber as String] as? CGWindowID,
@@ -152,7 +162,8 @@ func cgWindowScan() -> (realWIDs: Set<CGWindowID>, pidsWithWindows: Set<pid_t>) 
             layer == 0
         else { continue }  // layer 0 = normal windows
 
-        if let ownerPid = info[kCGWindowOwnerPID as String] as? Int32 {
+        let ownerPid = info[kCGWindowOwnerPID as String] as? Int32
+        if let ownerPid = ownerPid {
             pidsWithWindows.insert(ownerPid)
         }
 
@@ -164,25 +175,31 @@ func cgWindowScan() -> (realWIDs: Set<CGWindowID>, pidsWithWindows: Set<pid_t>) 
             !spaces.isEmpty
         {
             realWIDs.insert(wid)  // This window has a Space → it's real, not a tab
+            if let ownerPid = ownerPid {
+                realWindowCountByPid[ownerPid, default: 0] += 1
+            }
         }
     }
 
-    return (realWIDs, pidsWithWindows)
+    return (realWIDs, pidsWithWindows, realWindowCountByPid)
 }
 
 // Merges standard + brute-force results, deduplicating by CGWindowID.
+// Returns (AXUIElement, title) tuples so callers don't need to re-read titles.
 //
 // Strategy:
 // 1. Use standard API (fast) to get windows on current Space
-// 2. Use brute-force (slow) to find windows on other Spaces
-// 3. Deduplicate: if a window appears in both, keep the standard version
-// 4. Filter: only keep brute-force windows that have a Space assignment (removes tabs)
-func allWindows(for pid: pid_t, realWIDs: Set<CGWindowID>) -> [AXUIElement] {
+// 2. If standard already found all windows (matching expectedCount), skip brute-force
+// 3. Otherwise use brute-force (slow) to find windows on other Spaces
+// 4. Deduplicate: if a window appears in both, keep the standard version
+// 5. Filter: only keep brute-force windows that have a Space assignment (removes tabs)
+func allWindows(for pid: pid_t, realWIDs: Set<CGWindowID>, expectedCount: Int)
+    -> [(element: AXUIElement, title: String)]
+{
     let standard = axWindows(for: pid)  // Fast: windows on current Space
-    let bruteForce = windowsByBruteForce(for: pid)  // Slow: windows on ALL Spaces
 
     var seenWindowIDs = Set<CGWindowID>()
-    var combined: [AXUIElement] = []
+    var combined: [(element: AXUIElement, title: String)] = []
 
     // First pass: add all standard windows (trusted, fast API)
     for win in standard {
@@ -191,8 +208,17 @@ func allWindows(for pid: pid_t, realWIDs: Set<CGWindowID>) -> [AXUIElement] {
         if let wid = getWindowID(of: win) {
             seenWindowIDs.insert(wid)  // Remember this window ID to avoid duplicates
         }
-        combined.append(win)
+        combined.append((element: win, title: title))
     }
+
+    // Skip brute-force if standard API already found all windows for this app.
+    // This means the app has no windows on other Spaces.
+    if combined.count >= expectedCount {
+        return combined
+    }
+
+    // Brute-force: find windows on other Spaces
+    let bruteForce = windowsByBruteForce(for: pid)
 
     // Second pass: add brute-force windows NOT already seen
     for win in bruteForce {
@@ -203,7 +229,7 @@ func allWindows(for pid: pid_t, realWIDs: Set<CGWindowID>) -> [AXUIElement] {
         if seenWindowIDs.contains(wid) { continue }  // Already got this from standard API
         guard realWIDs.contains(wid) else { continue }  // Must have a Space (filters out tabs)
         seenWindowIDs.insert(wid)
-        combined.append(win)
+        combined.append((element: win, title: title))
     }
 
     return combined
@@ -211,7 +237,7 @@ func allWindows(for pid: pid_t, realWIDs: Set<CGWindowID>) -> [AXUIElement] {
 
 func listWindows() {
     let skipBundleIds = Set(["com.raycast.macos"])
-    let (realWIDs, pidsWithWindows) = cgWindowScan()
+    let (realWIDs, pidsWithWindows, realWindowCountByPid) = cgWindowScan()
 
     struct AppEntry {
         let name: String
@@ -246,22 +272,21 @@ func listWindows() {
 
     DispatchQueue.concurrentPerform(iterations: apps.count) { i in
         let app = apps[i]
-        let windows = allWindows(for: app.pid, realWIDs: realWIDs)
+        let expectedCount = realWindowCountByPid[app.pid] ?? 0
+        let windows = allWindows(for: app.pid, realWIDs: realWIDs, expectedCount: expectedCount)
         var localResults: [WindowInfo] = []
 
-        for (index, window) in windows.enumerated() {
-            let title = getTitle(of: window)
-            guard !title.isEmpty else { continue }
-
+        // Titles are already resolved — no need to call getTitle again
+        for (index, entry) in windows.enumerated() {
             localResults.append(
                 WindowInfo(
                     processName: app.name,
-                    windowTitle: title,
+                    windowTitle: entry.title,
                     bundleId: app.bundleId,
                     appPath: app.path,
                     pid: app.pid,
                     windowIndex: index,
-                    isMinimized: isMinimized(window)
+                    isMinimized: isMinimized(entry.element)
                 ))
         }
 
@@ -281,20 +306,22 @@ func focusWindow(pid: pid_t, windowIndex: Int) {
         app.activate()
     }
 
-    let (realWIDs, _) = cgWindowScan()
-    let windows = allWindows(for: pid, realWIDs: realWIDs)
+    let (realWIDs, _, realWindowCountByPid) = cgWindowScan()
+    let expectedCount = realWindowCountByPid[pid] ?? 0
+    let windows = allWindows(for: pid, realWIDs: realWIDs, expectedCount: expectedCount)
     if windowIndex < windows.count {
-        AXUIElementPerformAction(windows[windowIndex], kAXRaiseAction as CFString)
+        AXUIElementPerformAction(windows[windowIndex].element, kAXRaiseAction as CFString)
     }
 
     print("{\"success\":true}")
 }
 
 func closeWindow(pid: pid_t, windowIndex: Int) {
-    let (realWIDs, _) = cgWindowScan()
-    let windows = allWindows(for: pid, realWIDs: realWIDs)
+    let (realWIDs, _, realWindowCountByPid) = cgWindowScan()
+    let expectedCount = realWindowCountByPid[pid] ?? 0
+    let windows = allWindows(for: pid, realWIDs: realWIDs, expectedCount: expectedCount)
     if windowIndex < windows.count {
-        let window = windows[windowIndex]
+        let window = windows[windowIndex].element
         var closeButtonValue: AnyObject?
         let err = AXUIElementCopyAttributeValue(
             window, kAXCloseButtonAttribute as CFString, &closeButtonValue)

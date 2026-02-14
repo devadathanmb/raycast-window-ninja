@@ -141,13 +141,14 @@ This is what Window Ninja uses to get window titles and to bring/close windows.
 ### Step 1: CGWindowList Scan
 
 ```swift
-func cgWindowScan() -> (realWIDs: Set<CGWindowID>, pidsWithWindows: Set<pid_t>)
+func cgWindowScan() -> (realWIDs: Set<CGWindowID>, pidsWithWindows: Set<pid_t>, realWindowCountByPid: [pid_t: Int])
 ```
 
-Before finding windows, we first do a quick scan using `CGWindowListCopyWindowInfo`. This gives us two things:
+Before finding windows, we first do a quick scan using `CGWindowListCopyWindowInfo`. This gives us three things:
 
 1. **Which apps have windows** (`pidsWithWindows`) — so we can skip apps with no windows entirely (performance)
 2. **Which windows are "real" vs tabs** (`realWIDs`) — more on this in Step 3
+3. **How many real windows each app has** (`realWindowCountByPid`) — so we can skip brute-force when the standard API already found everything
 
 ```mermaid
 graph TD
@@ -234,7 +235,7 @@ graph TD
     J -->|No| I
 ```
 
-We cap at 500 attempts and 50ms timeout per app — real windows are typically found within the first few hundred IDs.
+We cap at 500 attempts, 50ms timeout, and 50 consecutive misses per app — real windows are typically found within the first few dozen IDs, and the consecutive-miss threshold ensures we stop early once we've passed the cluster of valid IDs.
 
 ### Step 4: Tab vs Window Deduplication
 
@@ -269,14 +270,15 @@ This correctly handles all cases:
 ### Step 5: Combine Results
 
 ```swift
-func allWindows(for pid: pid_t, realWIDs: Set<CGWindowID>) -> [AXUIElement]
+func allWindows(for pid: pid_t, realWIDs: Set<CGWindowID>, expectedCount: Int) -> [(element: AXUIElement, title: String)]
 ```
 
-Finally, we merge the two sources:
+Finally, we merge the two sources. Returns `(element, title)` tuples so titles are read only once (each title read is an IPC round-trip):
 
 1. Start with **standard API results** (always correct for current Space)
 2. Record their CGWindowIDs as "seen"
-3. Add **brute-force results** only if:
+3. **If standard already found all windows** (count >= `expectedCount`), skip brute-force entirely
+4. Otherwise, add **brute-force results** only if:
    - CGWindowID is not already seen (not a duplicate)
    - CGWindowID is in `realWIDs` (not a tab)
 
@@ -384,8 +386,17 @@ graph LR
 
 - Maximum 500 element IDs per app
 - 50ms timeout per app
+- 50 consecutive misses → early exit (IDs cluster low, so gaps mean we're done)
 
 Real windows are found quickly; we don't waste time scanning further.
+
+### 4. Skip Brute-Force When Unnecessary
+
+`cgWindowScan()` counts real windows per PID. If the standard AX API already found all of an app's windows (they're all on the current Space), brute-force is skipped entirely for that app.
+
+### 5. Single Title Read
+
+`allWindows()` returns `(element, title)` tuples. Titles are read once during discovery and reused when building JSON output — avoiding a redundant IPC round-trip per window.
 
 ---
 

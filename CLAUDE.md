@@ -54,11 +54,13 @@ The brute-force method finds AX elements for individual tabs too. Tabs are filte
 
 ## Performance
 
-The Swift binary uses three optimizations to keep enumeration fast:
+The Swift binary uses five optimizations to keep enumeration fast:
 
 1. **Skip windowless apps** — `cgWindowScan()` does a single `CGWindowListCopyWindowInfo` pass to collect which PIDs own at least one window. Apps with no windows are skipped before the AX brute-force runs.
 2. **Parallel enumeration** — `DispatchQueue.concurrentPerform` processes all eligible apps concurrently across CPU threads.
 3. **Bounded brute-force** — The element ID sweep is capped at 500 IDs / 50ms per app (down from 1000 / 100ms).
+4. **Consecutive-miss early exit** — The brute-force loop stops after 50 consecutive misses, since element IDs cluster in low numbers. Most apps exit after ~60 IDs instead of 500.
+5. **Skip brute-force when unnecessary** — `cgWindowScan()` counts real windows per PID. If the standard AX API already found all of an app's windows, brute-force is skipped entirely for that app.
 
 ## User Preferences
 
