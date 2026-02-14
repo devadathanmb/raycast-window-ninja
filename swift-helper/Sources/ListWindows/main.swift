@@ -33,18 +33,28 @@ struct WindowInfo: Codable {
     let pid: Int32
     let windowIndex: Int
     let isMinimized: Bool
+    let isFullscreen: Bool
+    let isAppHidden: Bool
 }
 
 // AX attribute reads all follow the same pattern: pass an attribute name string
 // and a pointer, get back a value. These helpers wrap that.
 
-func isMinimized(_ element: AXUIElement) -> Bool {
+func boolAttribute(_ element: AXUIElement, _ attribute: CFString) -> Bool? {
     var value: AnyObject?
-    let err = AXUIElementCopyAttributeValue(element, kAXMinimizedAttribute as CFString, &value)
-    if err == .success, let minimized = value as? Bool {
-        return minimized
+    let err = AXUIElementCopyAttributeValue(element, attribute, &value)
+    if err == .success, let flag = value as? Bool {
+        return flag
     }
-    return false
+    return nil
+}
+
+func isMinimized(_ element: AXUIElement) -> Bool {
+    return boolAttribute(element, kAXMinimizedAttribute as CFString) ?? false
+}
+
+func isFullscreen(_ element: AXUIElement) -> Bool {
+    return boolAttribute(element, "AXFullScreen" as CFString) ?? false
 }
 
 func getTitle(of element: AXUIElement) -> String {
@@ -286,7 +296,9 @@ func listWindows() {
                     appPath: app.path,
                     pid: app.pid,
                     windowIndex: index,
-                    isMinimized: isMinimized(entry.element)
+                    isMinimized: isMinimized(entry.element),
+                    isFullscreen: isFullscreen(entry.element),
+                    isAppHidden: NSRunningApplication(processIdentifier: app.pid)?.isHidden ?? false
                 ))
         }
 
@@ -397,9 +409,143 @@ func closeWindow(pid: pid_t, windowIndex: Int) {
     print("{\"success\":false,\"error\":\"All close methods failed\"}")
 }
 
+func minimizeWindow(pid: pid_t, windowIndex: Int) {
+    let (realWIDs, _, realWindowCountByPid) = cgWindowScan()
+    let expectedCount = realWindowCountByPid[pid] ?? 0
+    let windows = allWindows(for: pid, realWIDs: realWIDs, expectedCount: expectedCount)
+
+    if windowIndex >= windows.count {
+        print("{\"success\":false,\"error\":\"Window not found\"}")
+        return
+    }
+
+    var window = windows[windowIndex].element
+
+    // Fullscreen windows often reject direct minimization. Exit fullscreen first,
+    // wait for the transition, then minimize.
+    if isFullscreen(window) {
+        _ = AXUIElementSetAttributeValue(window, "AXFullScreen" as CFString, kCFBooleanFalse)
+        usleep(250000)  // 250ms for Space/fullscreen transition start
+    }
+
+    // Retry for up to ~2s. Exiting fullscreen is asynchronous and can briefly reject minimize.
+    for _ in 0..<10 {
+        let err = AXUIElementSetAttributeValue(window, kAXMinimizedAttribute as CFString, kCFBooleanTrue)
+        if err == .success || boolAttribute(window, kAXMinimizedAttribute as CFString) == true {
+            print("{\"success\":true}")
+            return
+        }
+
+        usleep(200000)
+
+        // Refresh the target element in case the fullscreen transition replaced the AX element.
+        let (refreshRealWIDs, _, refreshCountByPid) = cgWindowScan()
+        let refreshExpectedCount = refreshCountByPid[pid] ?? 0
+        let refreshedWindows = allWindows(
+            for: pid, realWIDs: refreshRealWIDs, expectedCount: refreshExpectedCount)
+        if windowIndex < refreshedWindows.count {
+            window = refreshedWindows[windowIndex].element
+        }
+    }
+
+    print("{\"success\":false,\"error\":\"Failed to minimize window\"}")
+}
+
+func maximizeWindow(pid: pid_t, windowIndex: Int) {
+    let (realWIDs, _, realWindowCountByPid) = cgWindowScan()
+    let expectedCount = realWindowCountByPid[pid] ?? 0
+    let windows = allWindows(for: pid, realWIDs: realWIDs, expectedCount: expectedCount)
+
+    if windowIndex >= windows.count {
+        print("{\"success\":false,\"error\":\"Window not found\"}")
+        return
+    }
+
+    let window = windows[windowIndex].element
+    let err = AXUIElementSetAttributeValue(window, kAXMinimizedAttribute as CFString, kCFBooleanFalse)
+    if err == .success || boolAttribute(window, kAXMinimizedAttribute as CFString) == false {
+        _ = AXUIElementPerformAction(window, kAXRaiseAction as CFString)
+        print("{\"success\":true}")
+    } else {
+        print("{\"success\":false,\"error\":\"Failed to maximize window\"}")
+    }
+}
+
+func makeWindowFullscreen(pid: pid_t, windowIndex: Int) {
+    let (realWIDs, _, realWindowCountByPid) = cgWindowScan()
+    let expectedCount = realWindowCountByPid[pid] ?? 0
+    let windows = allWindows(for: pid, realWIDs: realWIDs, expectedCount: expectedCount)
+
+    if windowIndex >= windows.count {
+        print("{\"success\":false,\"error\":\"Window not found\"}")
+        return
+    }
+
+    let err = AXUIElementSetAttributeValue(
+        windows[windowIndex].element, "AXFullScreen" as CFString, kCFBooleanTrue)
+    if err == .success {
+        print("{\"success\":true}")
+    } else {
+        print("{\"success\":false,\"error\":\"Failed to make window full screen\"}")
+    }
+}
+
+func exitWindowFullscreen(pid: pid_t, windowIndex: Int) {
+    let (realWIDs, _, realWindowCountByPid) = cgWindowScan()
+    let expectedCount = realWindowCountByPid[pid] ?? 0
+    let windows = allWindows(for: pid, realWIDs: realWIDs, expectedCount: expectedCount)
+
+    if windowIndex >= windows.count {
+        print("{\"success\":false,\"error\":\"Window not found\"}")
+        return
+    }
+
+    let err = AXUIElementSetAttributeValue(
+        windows[windowIndex].element, "AXFullScreen" as CFString, kCFBooleanFalse)
+    if err == .success {
+        print("{\"success\":true}")
+    } else {
+        print("{\"success\":false,\"error\":\"Failed to exit full screen\"}")
+    }
+}
+
+func hideApplication(pid: pid_t) {
+    guard let app = NSRunningApplication(processIdentifier: pid) else {
+        print("{\"success\":false,\"error\":\"Application not found\"}")
+        return
+    }
+
+    if app.hide() {
+        print("{\"success\":true}")
+    } else {
+        print("{\"success\":false,\"error\":\"Failed to hide application\"}")
+    }
+}
+
+func showApplication(pid: pid_t) {
+    guard let app = NSRunningApplication(processIdentifier: pid) else {
+        print("{\"success\":false,\"error\":\"Application not found\"}")
+        return
+    }
+
+    let unhidden = app.unhide()
+    _ = app.activate()
+    if unhidden {
+        print("{\"success\":true}")
+    } else {
+        print("{\"success\":false,\"error\":\"Failed to show application\"}")
+    }
+}
+
 // Usage: list-windows              → JSON array of all windows
 //        list-windows focus <pid> <index>  → activate that window
 //        list-windows close <pid> <index>  → close that window
+//        list-windows minimize <pid> <index>  → minimize that window
+//        list-windows maximize <pid> <index>  → unminimize that window
+//        list-windows fullscreen <pid> <index>  → make that window full screen
+//        list-windows unfullscreen <pid> <index>  → exit full screen for that window
+//        list-windows hide-app <pid>  → hide that application
+//        list-windows show-app <pid>  → unhide that application
 
 let args = CommandLine.arguments
 
@@ -426,6 +572,64 @@ if args.count < 2 {
             exit(1)
         }
         closeWindow(pid: pid, windowIndex: idx)
+
+    case "minimize":
+        guard args.count >= 4,
+            let pid = Int32(args[2]),
+            let idx = Int(args[3])
+        else {
+            fputs("Usage: list-windows minimize <pid> <windowIndex>\n", stderr)
+            exit(1)
+        }
+        minimizeWindow(pid: pid, windowIndex: idx)
+
+    case "maximize":
+        guard args.count >= 4,
+            let pid = Int32(args[2]),
+            let idx = Int(args[3])
+        else {
+            fputs("Usage: list-windows maximize <pid> <windowIndex>\n", stderr)
+            exit(1)
+        }
+        maximizeWindow(pid: pid, windowIndex: idx)
+
+    case "fullscreen":
+        guard args.count >= 4,
+            let pid = Int32(args[2]),
+            let idx = Int(args[3])
+        else {
+            fputs("Usage: list-windows fullscreen <pid> <windowIndex>\n", stderr)
+            exit(1)
+        }
+        makeWindowFullscreen(pid: pid, windowIndex: idx)
+
+    case "unfullscreen":
+        guard args.count >= 4,
+            let pid = Int32(args[2]),
+            let idx = Int(args[3])
+        else {
+            fputs("Usage: list-windows unfullscreen <pid> <windowIndex>\n", stderr)
+            exit(1)
+        }
+        exitWindowFullscreen(pid: pid, windowIndex: idx)
+
+    case "hide-app":
+        guard args.count >= 3,
+            let pid = Int32(args[2])
+        else {
+            fputs("Usage: list-windows hide-app <pid>\n", stderr)
+            exit(1)
+        }
+        hideApplication(pid: pid)
+
+    case "show-app":
+        guard args.count >= 3,
+            let pid = Int32(args[2])
+        else {
+            fputs("Usage: list-windows show-app <pid>\n", stderr)
+            exit(1)
+        }
+        showApplication(pid: pid)
 
     default:
         listWindows()
