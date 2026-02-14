@@ -62,6 +62,16 @@ The Swift binary uses five optimizations to keep enumeration fast:
 4. **Consecutive-miss early exit** — The brute-force loop stops after 50 consecutive misses, since element IDs cluster in low numbers. Most apps exit after ~60 IDs instead of 500.
 5. **Skip brute-force when unnecessary** — `cgWindowScan()` counts real windows per PID. If the standard AX API already found all of an app's windows, brute-force is skipped entirely for that app.
 
+## Window Close Strategy
+
+`closeWindow()` uses a three-strategy cascade with verification:
+
+1. **Close button** — Gets the AX close button (`kAXCloseButtonAttribute`) and presses it. Waits 200ms, then verifies the window is gone via `windowExists()`.
+2. **AppleScript** — Falls back to `tell application id "..." to close (first window whose name is "...")`. Matches by window title (not index, since AX enumeration order differs from AppleScript's). Also verifies with `windowExists()`.
+3. **Terminate app** — If the app has only one window and the above strategies failed, terminates the app entirely.
+
+If all strategies fail, returns `{"success":false}`. The `windowExists()` helper does a fresh `cgWindowScan()` + `allWindows()` pass to confirm the target CGWindowID is actually gone.
+
 ## User Preferences
 
 | Preference             | Type     | Default | Description                           |

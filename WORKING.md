@@ -320,24 +320,53 @@ sequenceDiagram
 func closeWindow(pid: pid_t, windowIndex: Int)
 ```
 
-```mermaid
-sequenceDiagram
-    participant User
-    participant Raycast
-    participant Swift
+Closing a window is surprisingly unreliable on macOS — not every app responds to every close method. Window Ninja uses a **three-strategy cascade** that tries each approach in order, verifying success before moving on:
 
-    User->>Raycast: Click "Close Window"
-    Raycast->>Swift: execFile("close 5678 0")
-    Swift->>Swift: allWindows() to find the window
-    Swift->>Swift: Get kAXCloseButtonAttribute
-    Swift->>Swift: AXUIElementPerformAction(kAXPressAction)
-    Swift-->>Raycast: {"success":true}
-    Raycast-->>User: Show HUD "Closed"
+```mermaid
+flowchart TD
+    Start[closeWindow called] --> Find[Find target window via allWindows]
+    Find --> GetID[Get CGWindowID for verification]
+    GetID --> S1[Strategy 1: Press AX close button]
+    S1 --> V1{windowExists?}
+    V1 -->|Gone| Done1[Return success: closeButton]
+    V1 -->|Still there| S2[Strategy 2: AppleScript close by title]
+    S2 --> V2{windowExists?}
+    V2 -->|Gone| Done2[Return success: applescript]
+    V2 -->|Still there| S3{Only 1 window in app?}
+    S3 -->|Yes| Term[Strategy 3: Terminate app]
+    Term --> Done3[Return success: terminate]
+    S3 -->|No| Fail[Return success: false]
 ```
 
-1. Find the target window's AX element
-2. Get its close button: `kAXCloseButtonAttribute`
-3. Press it: `AXUIElementPerformAction(kAXPressAction)`
+### Strategy 1: Close Button (AX API)
+
+1. Get the close button via `kAXCloseButtonAttribute`
+2. Press it via `AXUIElementPerformAction(kAXPressAction)`
+3. Wait 200ms, then verify with `windowExists()`
+
+This works for most standard apps.
+
+### Strategy 2: AppleScript
+
+Falls back to AppleScript when the close button doesn't work (common with terminal emulators):
+
+```applescript
+tell application id "com.example.app" to close (first window whose name is "My Window")
+```
+
+The window is matched **by title**, not by index — AX enumeration order has no guaranteed relationship to AppleScript's window ordering. The title is escaped for special characters. After execution, `windowExists()` verifies the window actually closed (a nil AppleScript error doesn't guarantee close — a confirmation dialog may appear).
+
+### Strategy 3: Terminate App
+
+If the app has only one window and both strategies above failed, terminate the app entirely via `NSRunningApplication.terminate()`.
+
+### Verification Helper
+
+```swift
+func windowExists(_ targetWindowID: CGWindowID, pid: pid_t) -> Bool
+```
+
+Does a fresh `cgWindowScan()` + `allWindows()` pass and checks if the target CGWindowID is still present. Used by both Strategy 1 and Strategy 2 to confirm the window is actually gone.
 
 ---
 

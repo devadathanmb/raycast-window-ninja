@@ -316,21 +316,77 @@ func focusWindow(pid: pid_t, windowIndex: Int) {
     print("{\"success\":true}")
 }
 
+// Check if a window with the given CGWindowID still exists for a given PID.
+func windowExists(_ targetWindowID: CGWindowID, pid: pid_t) -> Bool {
+    let (newRealWIDs, _, newRealWindowCountByPid) = cgWindowScan()
+    let newExpectedCount = newRealWindowCountByPid[pid] ?? 0
+    let newWindows = allWindows(for: pid, realWIDs: newRealWIDs, expectedCount: newExpectedCount)
+    return newWindows.contains { getWindowID(of: $0.element) == targetWindowID }
+}
+
 func closeWindow(pid: pid_t, windowIndex: Int) {
     let (realWIDs, _, realWindowCountByPid) = cgWindowScan()
     let expectedCount = realWindowCountByPid[pid] ?? 0
     let windows = allWindows(for: pid, realWIDs: realWIDs, expectedCount: expectedCount)
-    if windowIndex < windows.count {
-        let window = windows[windowIndex].element
-        var closeButtonValue: AnyObject?
-        let err = AXUIElementCopyAttributeValue(
-            window, kAXCloseButtonAttribute as CFString, &closeButtonValue)
-        if err == .success, let closeButton = closeButtonValue {
-            AXUIElementPerformAction(closeButton as! AXUIElement, kAXPressAction as CFString)
+    
+    if windowIndex >= windows.count {
+        print("{\"success\":false,\"error\":\"Window not found\"}")
+        return
+    }
+    
+    let window = windows[windowIndex].element
+    let app = NSRunningApplication(processIdentifier: pid)
+    
+    // Get the window ID for later verification
+    guard let targetWindowID = getWindowID(of: window) else {
+        print("{\"success\":false,\"error\":\"Could not get window ID\"}")
+        return
+    }
+    
+    // Strategy 1: Try clicking the close button
+    var closeButtonValue: AnyObject?
+    let err = AXUIElementCopyAttributeValue(
+        window, kAXCloseButtonAttribute as CFString, &closeButtonValue)
+    if err == .success, let closeButton = closeButtonValue {
+        AXUIElementPerformAction(closeButton as! AXUIElement, kAXPressAction as CFString)
+        usleep(200000) // 200ms - wait before verifying
+        
+        if !windowExists(targetWindowID, pid: pid) {
+            print("{\"success\":true,\"method\":\"closeButton\"}")
+            return
         }
     }
-
-    print("{\"success\":true}")
+    
+    // Strategy 2: Try AppleScript - more reliable for terminal emulators
+    if let app = app, let bundleId = app.bundleIdentifier {
+        // Use window title to identify the correct window, since AX enumeration
+        // order does not necessarily match AppleScript's window ordering
+        let title = windows[windowIndex].title
+        let escapedTitle = title.replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"")
+        let scriptSource =
+            "tell application id \"\(bundleId)\" to close (first window whose name is \"\(escapedTitle)\")"
+        if let appleScript = NSAppleScript(source: scriptSource) {
+            var scriptError: NSDictionary?
+            appleScript.executeAndReturnError(&scriptError)
+            if scriptError == nil {
+                usleep(200000) // 200ms - verify the window actually closed
+                if !windowExists(targetWindowID, pid: pid) {
+                    print("{\"success\":true,\"method\":\"applescript\"}")
+                    return
+                }
+            }
+        }
+    }
+    
+    // Strategy 3: If it's the only window, terminate the app
+    if windows.count == 1, let app = app {
+        app.terminate()
+        print("{\"success\":true,\"method\":\"terminate\"}")
+        return
+    }
+    
+    print("{\"success\":false,\"error\":\"All close methods failed\"}")
 }
 
 // Usage: list-windows              → JSON array of all windows
