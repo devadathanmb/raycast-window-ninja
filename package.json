@@ -46,9 +46,10 @@
     "build": "npm run build:swift && ray build --skip-types -o dist",
     "dev": "npm run build:swift && ray develop",
     "fix-lint": "ray lint --fix",
-    "lint": "ray lint",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
+    "lint": "ray lint",
+    "format:swift": "swift-format format -i -r swift-helper/Sources/",
     "typecheck": "tsc --noEmit",
     "prepare": "husky"
   }

@@ -36,6 +36,7 @@ npm run typecheck    # TypeScript type checking
 npm run lint         # Lint check
 npm run fix-lint     # Auto-fix lint issues
 npm run format       # Format code with Prettier
+npm run format:swift # Format Swift code with swift-format
 ```
 
 A pre-commit hook runs format, typecheck, and lint before each commit.
