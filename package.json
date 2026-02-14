@@ -1,0 +1,55 @@
+{
+  "$schema": "https://www.raycast.com/schemas/extension.json",
+  "name": "window-ninja",
+  "title": "Window Ninja",
+  "description": "Switch between every open window across all apps and all Spaces",
+  "icon": "command-icon.png",
+  "author": "devadathanmb",
+  "categories": [
+    "System",
+    "Productivity"
+  ],
+  "license": "MIT",
+  "commands": [
+    {
+      "name": "window-ninja",
+      "title": "Window Ninja",
+      "description": "List and switch between every open window across all apps and Spaces",
+      "mode": "view"
+    }
+  ],
+  "preferences": [
+    {
+      "name": "showMinimizedWindows",
+      "title": "Show Minimized Windows",
+      "description": "Show minimized (hidden) windows in the list",
+      "type": "checkbox",
+      "default": false,
+      "label": "Show Minimized Windows",
+      "required": false
+    }
+  ],
+  "dependencies": {
+    "@raycast/api": "^1.104.6"
+  },
+  "devDependencies": {
+    "@raycast/eslint-config": "^1.0.11",
+    "@types/node": "22.13.4",
+    "@types/react": "19.0.8",
+    "eslint": "^8.57.0",
+    "husky": "^9.1.7",
+    "prettier": "^3.4.2",
+    "typescript": "^5.7.3"
+  },
+  "scripts": {
+    "build:swift": "swiftc -O -framework Cocoa -framework ApplicationServices swift-helper/list-windows.swift -o assets/list-windows",
+    "build": "npm run build:swift && ray build --skip-types -o dist",
+    "dev": "npm run build:swift && ray develop",
+    "fix-lint": "ray lint --fix",
+    "lint": "ray lint",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "typecheck": "tsc --noEmit",
+    "prepare": "husky"
+  }
+}
