@@ -60,6 +60,17 @@ The extension will now be available in Raycast.
 
 Open Raycast, type `Window Ninja`, search by window title or app name, and press Enter to switch.
 
+## Performance
+
+This extension is blazingly fast. Below is the benchmark of the binary, done using [hyperfine](https://github.com/sharkdp/hyperfine):
+
+```
+❯ hyperfine --warmup 20 --runs 100 ./assets/list-windows 2>&1
+Benchmark 1: ./assets/list-windows
+  Time (mean ± σ):      45.5 ms ±   2.8 ms    [User: 4.6 ms, System: 3.5 ms]
+  Range (min … max):    39.4 ms …  55.5 ms    100 runs
+```
+
 ## Development
 
 To start development mode with hot reloading:
