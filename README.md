@@ -43,10 +43,16 @@ cd window-ninja
 npm install
 ```
 
-3. Import into Raycast:
+3. Build the extension (generates a `dist/` directory containing the built extension):
+
+```bash
+npm run build
+```
+
+4. Import into Raycast:
    - Open Raycast
    - Search for "Import Extension"
-   - Select this directory (`window-ninja`)
+   - Select the `dist` folder inside the `window-ninja` folder
 
 The extension will now be available in Raycast.
 
