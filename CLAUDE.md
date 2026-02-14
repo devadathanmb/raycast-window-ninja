@@ -8,10 +8,11 @@
 
 Two components:
 
-1. **Swift helper binary** (`swift-helper/list-windows.swift` → compiled to `assets/list-windows`)
+1. **Swift helper binary** (`swift-helper/Sources/ListWindows/main.swift` → compiled to `assets/list-windows`)
+   - Structured as a Swift Package Manager project for LSP support
    - Uses macOS Accessibility API + private APIs to enumerate windows across all Spaces
    - Outputs JSON to stdout; accepts `focus <pid> <idx>` and `close <pid> <idx>` subcommands
-   - Must be recompiled after changes: `swiftc -O -framework Cocoa -framework ApplicationServices swift-helper/list-windows.swift -o assets/list-windows`
+   - Automatically recompiled by `npm run dev` and `npm run build`
 
 2. **Raycast extension** (`src/window-ninja.tsx`)
    - Calls the Swift binary via `child_process.execFile`, parses JSON, renders Raycast `<List>`

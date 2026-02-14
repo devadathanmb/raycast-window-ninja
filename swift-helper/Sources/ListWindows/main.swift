@@ -1,5 +1,5 @@
-import Cocoa
 import ApplicationServices
+import Cocoa
 import Foundation
 
 // Undocumented macOS APIs (same technique as AltTab - lwouis/alt-tab-macos).
@@ -11,7 +11,8 @@ func _AXUIElementCreateWithRemoteToken(_ data: CFData) -> Unmanaged<AXUIElement>
 
 // Bridges AXUIElement -> CGWindowID so we can cross-reference with CGWindowList.
 @_silgen_name("_AXUIElementGetWindow")
-func _AXUIElementGetWindow(_ element: AXUIElement, _ windowID: UnsafeMutablePointer<CGWindowID>) -> AXError
+func _AXUIElementGetWindow(_ element: AXUIElement, _ windowID: UnsafeMutablePointer<CGWindowID>)
+    -> AXError
 
 // Session connection ID, required by other private Space APIs.
 @_silgen_name("CGSMainConnectionID")
@@ -65,7 +66,8 @@ func getWindowID(of element: AXUIElement) -> CGWindowID? {
 func axWindows(for pid: pid_t) -> [AXUIElement] {
     let appElement = AXUIElementCreateApplication(pid)
     var windowsValue: AnyObject?
-    let err = AXUIElementCopyAttributeValue(appElement, kAXWindowsAttribute as CFString, &windowsValue)
+    let err = AXUIElementCopyAttributeValue(
+        appElement, kAXWindowsAttribute as CFString, &windowsValue)
     if err == .success, let windows = windowsValue as? [AXUIElement] {
         return windows
     }
@@ -74,35 +76,53 @@ func axWindows(for pid: pid_t) -> [AXUIElement] {
 
 // Brute-force discovery for windows on OTHER Spaces (fullscreen apps, etc.).
 //
-// We construct AXUIElements by hand using a 20-byte "remote token":
-//   bytes 0-3:   PID
+// The standard AX API only returns windows on the current Space. To find windows on
+// other Spaces, we use a private API that accepts a "remote token" to create AX elements.
+//
+// Since there's no "give me all windows" function, we have to guess element IDs one by one.
+// The private API can only fetch ONE element at a time by its ID:
+//   _AXUIElementCreateWithRemoteToken(token) → returns element or nil
+//
+// We construct a 20-byte "remote token" for each guess:
+//   bytes 0-3:   PID (which app to search in)
 //   bytes 4-7:   reserved (zero)
 //   bytes 8-11:  0x636f636f ("coco" — marks it as a Cocoa app)
-//   bytes 12-19: element ID (we sweep through these)
+//   bytes 12-19: element ID (the part we loop through: 0, 1, 2, 3...)
 //
 // We try IDs 0–499 with a 50ms timeout per app and keep standard windows/dialogs.
 func windowsByBruteForce(for pid: pid_t) -> [AXUIElement] {
+    // Build the base token with PID and "coco" marker
     var remoteToken = Data(count: 20)
-    remoteToken.replaceSubrange(0..<4, with: withUnsafeBytes(of: pid) { Data($0) })
-    remoteToken.replaceSubrange(4..<8, with: withUnsafeBytes(of: Int32(0)) { Data($0) })
-    remoteToken.replaceSubrange(8..<12, with: withUnsafeBytes(of: Int32(0x636f636f)) { Data($0) })
+    remoteToken.replaceSubrange(0..<4, with: withUnsafeBytes(of: pid) { Data($0) })  // PID
+    remoteToken.replaceSubrange(4..<8, with: withUnsafeBytes(of: Int32(0)) { Data($0) })  // Reserved
+    remoteToken.replaceSubrange(8..<12, with: withUnsafeBytes(of: Int32(0x636f_636f)) { Data($0) })  // "coco"
 
     var results: [AXUIElement] = []
     let startTime = CFAbsoluteTimeGetCurrent()
 
+    // Try element IDs 0, 1, 2, 3... until we hit 500 or spend 50ms
     for elementId: AXUIElementID in 0..<500 {
-        if CFAbsoluteTimeGetCurrent() - startTime > 0.05 { break }
+        if CFAbsoluteTimeGetCurrent() - startTime > 0.05 { break }  // Don't spend more than 50ms per app
 
+        // Update the token with this element ID
         remoteToken.replaceSubrange(12..<20, with: withUnsafeBytes(of: elementId) { Data($0) })
 
-        guard let axElement = _AXUIElementCreateWithRemoteToken(remoteToken as CFData)?.takeRetainedValue() else {
-            continue
+        // Try to create an element with this ID
+        // If this ID doesn't exist, the API returns nil and we skip to the next iteration
+        guard
+            let axElement = _AXUIElementCreateWithRemoteToken(remoteToken as CFData)?
+                .takeRetainedValue()
+        else {
+            continue  // This element ID doesn't exist, try next number
         }
 
+        // Check if this element is a window (not a button, menu, tab, etc.)
         var subroleValue: AnyObject?
-        let err = AXUIElementCopyAttributeValue(axElement, kAXSubroleAttribute as CFString, &subroleValue)
+        let err = AXUIElementCopyAttributeValue(
+            axElement, kAXSubroleAttribute as CFString, &subroleValue)
         guard err == .success, let subrole = subroleValue as? String else { continue }
 
+        // Only keep actual windows and dialogs, skip everything else
         if subrole == kAXStandardWindowSubrole as String || subrole == kAXDialogSubrole as String {
             results.append(axElement)
         }
@@ -119,25 +139,31 @@ func cgWindowScan() -> (realWIDs: Set<CGWindowID>, pidsWithWindows: Set<pid_t>) 
     var realWIDs = Set<CGWindowID>()
     var pidsWithWindows = Set<pid_t>()
 
-    guard let windowInfoList = CGWindowListCopyWindowInfo(
-        [.optionAll, .excludeDesktopElements],
-        kCGNullWindowID
-    ) as? [[String: Any]] else { return (realWIDs, pidsWithWindows) }
+    guard
+        let windowInfoList = CGWindowListCopyWindowInfo(
+            [.optionAll, .excludeDesktopElements],
+            kCGNullWindowID
+        ) as? [[String: Any]]
+    else { return (realWIDs, pidsWithWindows) }
 
     for info in windowInfoList {
         guard let wid = info[kCGWindowNumber as String] as? CGWindowID,
-              let layer = info[kCGWindowLayer as String] as? Int,
-              layer == 0 else { continue }  // layer 0 = normal windows
+            let layer = info[kCGWindowLayer as String] as? Int,
+            layer == 0
+        else { continue }  // layer 0 = normal windows
 
         if let ownerPid = info[kCGWindowOwnerPID as String] as? Int32 {
             pidsWithWindows.insert(ownerPid)
         }
 
-        // Windows with a Space assignment are real; tabs have a CGWindowID but no Space.
+        // Check if this window is assigned to a macOS Space.
+        // Real windows belong to a Space. Browser tabs get a CGWindowID but NO Space assignment.
+        // This is how we tell them apart.
         let widArray = [wid] as CFArray
         if let spaces = CGSCopySpacesForWindows(conn, 0x7, widArray) as? [UInt64],
-           !spaces.isEmpty {
-            realWIDs.insert(wid)
+            !spaces.isEmpty
+        {
+            realWIDs.insert(wid)  // This window has a Space → it's real, not a tab
         }
     }
 
@@ -145,31 +171,37 @@ func cgWindowScan() -> (realWIDs: Set<CGWindowID>, pidsWithWindows: Set<pid_t>) 
 }
 
 // Merges standard + brute-force results, deduplicating by CGWindowID.
-// Standard results are trusted. Brute-force results are only kept if their
-// CGWindowID is in realWIDs (filters out browser tabs).
+//
+// Strategy:
+// 1. Use standard API (fast) to get windows on current Space
+// 2. Use brute-force (slow) to find windows on other Spaces
+// 3. Deduplicate: if a window appears in both, keep the standard version
+// 4. Filter: only keep brute-force windows that have a Space assignment (removes tabs)
 func allWindows(for pid: pid_t, realWIDs: Set<CGWindowID>) -> [AXUIElement] {
-    let standard = axWindows(for: pid)
-    let bruteForce = windowsByBruteForce(for: pid)
+    let standard = axWindows(for: pid)  // Fast: windows on current Space
+    let bruteForce = windowsByBruteForce(for: pid)  // Slow: windows on ALL Spaces
 
     var seenWindowIDs = Set<CGWindowID>()
     var combined: [AXUIElement] = []
 
+    // First pass: add all standard windows (trusted, fast API)
     for win in standard {
         let title = getTitle(of: win)
         guard !title.isEmpty else { continue }
         if let wid = getWindowID(of: win) {
-            seenWindowIDs.insert(wid)
+            seenWindowIDs.insert(wid)  // Remember this window ID to avoid duplicates
         }
         combined.append(win)
     }
 
+    // Second pass: add brute-force windows NOT already seen
     for win in bruteForce {
         let title = getTitle(of: win)
         guard !title.isEmpty else { continue }
 
         guard let wid = getWindowID(of: win) else { continue }
-        if seenWindowIDs.contains(wid) { continue }
-        guard realWIDs.contains(wid) else { continue }
+        if seenWindowIDs.contains(wid) { continue }  // Already got this from standard API
+        guard realWIDs.contains(wid) else { continue }  // Must have a Space (filters out tabs)
         seenWindowIDs.insert(wid)
         combined.append(win)
     }
@@ -198,15 +230,17 @@ func listWindows() {
         let pid = app.processIdentifier
         guard pidsWithWindows.contains(pid) else { continue }
 
-        apps.append(AppEntry(
-            name: app.localizedName ?? "",
-            bundleId: bundleId,
-            path: app.bundleURL?.path ?? "",
-            pid: pid
-        ))
+        apps.append(
+            AppEntry(
+                name: app.localizedName ?? "",
+                bundleId: bundleId,
+                path: app.bundleURL?.path ?? "",
+                pid: pid
+            ))
     }
 
-    // Enumerate each app's windows in parallel (GCD).
+    // Enumerate each app's windows in parallel (GCD) for speed.
+    // Since we're modifying a shared array from multiple threads, we need a lock.
     let lock = NSLock()
     var allResults: [WindowInfo] = []
 
@@ -219,15 +253,16 @@ func listWindows() {
             let title = getTitle(of: window)
             guard !title.isEmpty else { continue }
 
-            localResults.append(WindowInfo(
-                processName: app.name,
-                windowTitle: title,
-                bundleId: app.bundleId,
-                appPath: app.path,
-                pid: app.pid,
-                windowIndex: index,
-                isMinimized: isMinimized(window)
-            ))
+            localResults.append(
+                WindowInfo(
+                    processName: app.name,
+                    windowTitle: title,
+                    bundleId: app.bundleId,
+                    appPath: app.path,
+                    pid: app.pid,
+                    windowIndex: index,
+                    isMinimized: isMinimized(window)
+                ))
         }
 
         lock.lock()
@@ -261,7 +296,8 @@ func closeWindow(pid: pid_t, windowIndex: Int) {
     if windowIndex < windows.count {
         let window = windows[windowIndex]
         var closeButtonValue: AnyObject?
-        let err = AXUIElementCopyAttributeValue(window, kAXCloseButtonAttribute as CFString, &closeButtonValue)
+        let err = AXUIElementCopyAttributeValue(
+            window, kAXCloseButtonAttribute as CFString, &closeButtonValue)
         if err == .success, let closeButton = closeButtonValue {
             AXUIElementPerformAction(closeButton as! AXUIElement, kAXPressAction as CFString)
         }
@@ -282,8 +318,9 @@ if args.count < 2 {
     switch args[1] {
     case "focus":
         guard args.count >= 4,
-              let pid = Int32(args[2]),
-              let idx = Int(args[3]) else {
+            let pid = Int32(args[2]),
+            let idx = Int(args[3])
+        else {
             fputs("Usage: list-windows focus <pid> <windowIndex>\n", stderr)
             exit(1)
         }
@@ -291,8 +328,9 @@ if args.count < 2 {
 
     case "close":
         guard args.count >= 4,
-              let pid = Int32(args[2]),
-              let idx = Int(args[3]) else {
+            let pid = Int32(args[2]),
+            let idx = Int(args[3])
+        else {
             fputs("Usage: list-windows close <pid> <windowIndex>\n", stderr)
             exit(1)
         }

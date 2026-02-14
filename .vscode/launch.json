@@ -1,0 +1,24 @@
+{
+  "configurations": [
+    {
+      "type": "swift",
+      "request": "launch",
+      "args": [],
+      "cwd": "${workspaceFolder:raycast-switch-windows}/swift-helper",
+      "name": "Debug list-windows (swift-helper)",
+      "target": "list-windows",
+      "configuration": "debug",
+      "preLaunchTask": "swift: Build Debug list-windows (swift-helper)"
+    },
+    {
+      "type": "swift",
+      "request": "launch",
+      "args": [],
+      "cwd": "${workspaceFolder:raycast-switch-windows}/swift-helper",
+      "name": "Release list-windows (swift-helper)",
+      "target": "list-windows",
+      "configuration": "release",
+      "preLaunchTask": "swift: Build Release list-windows (swift-helper)"
+    }
+  ]
+}
