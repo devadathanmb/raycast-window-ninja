@@ -72,7 +72,7 @@ Make your changes to the TypeScript files in `src/`. The extension will automati
 
 ### Modifying the Swift Helper
 
-If you modify the Swift helper (`swift-helper/list-windows.swift`), recompile it:
+If you modify the Swift helper in the `swift-helper/` directory, recompile it:
 
 ```bash
 npm run build:swift
