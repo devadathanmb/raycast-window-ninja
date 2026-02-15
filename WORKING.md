@@ -369,10 +369,10 @@ If the app has only one window and both strategies above failed, terminate the a
 ### Verification Helper
 
 ```swift
-func windowExists(_ targetWindowID: CGWindowID, pid: pid_t) -> Bool
+func windowExists(_ targetWindowID: CGWindowID) -> Bool
 ```
 
-Does a fresh `cgWindowScan()` + `allWindows()` pass and checks if the target CGWindowID is still present. Used by both Strategy 1 and Strategy 2 to confirm the window is actually gone.
+Does a lightweight `CGWindowListCopyWindowInfo` scan (no AX calls or brute-force) and checks if the target CGWindowID is still present among layer-0 windows. Used by both Strategy 1 and Strategy 2 to confirm the window is actually gone.
 
 ---
 

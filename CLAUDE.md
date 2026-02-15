@@ -72,7 +72,7 @@ The Swift binary uses five optimizations to keep enumeration fast:
 2. **AppleScript** — Falls back to `tell application id "..." to close (first window whose name is "...")`. Matches by window title (not index, since AX enumeration order differs from AppleScript's). Also verifies with `windowExists()`.
 3. **Terminate app** — If the app has only one window and the above strategies failed, terminates the app entirely.
 
-If all strategies fail, returns `{"success":false}`. The `windowExists()` helper does a fresh `cgWindowScan()` + `allWindows()` pass to confirm the target CGWindowID is actually gone.
+If all strategies fail, returns `{"success":false}`. The `windowExists()` helper does a lightweight `CGWindowListCopyWindowInfo` scan (no AX calls or brute-force) to confirm the target CGWindowID is actually gone.
 
 ## Window Minimize Strategy
 

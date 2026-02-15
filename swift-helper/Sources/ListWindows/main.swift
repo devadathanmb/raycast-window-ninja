@@ -340,12 +340,23 @@ func focusWindow(pid: pid_t, windowIndex: Int) {
     print("{\"success\":true}")
 }
 
-// Check if a window with the given CGWindowID still exists for a given PID.
-func windowExists(_ targetWindowID: CGWindowID, pid: pid_t) -> Bool {
-    let (newRealWIDs, _, newRealWindowCountByPid) = cgWindowScan()
-    let newExpectedCount = newRealWindowCountByPid[pid] ?? 0
-    let newWindows = allWindows(for: pid, realWIDs: newRealWIDs, expectedCount: newExpectedCount)
-    return newWindows.contains { getWindowID(of: $0.element) == targetWindowID }
+// Lightweight check: does a window with this CGWindowID still exist?
+// Uses only CGWindowListCopyWindowInfo (no AX calls, no brute-force).
+func windowExists(_ targetWindowID: CGWindowID) -> Bool {
+    guard
+        let windowInfoList = CGWindowListCopyWindowInfo(
+            [.optionAll, .excludeDesktopElements],
+            kCGNullWindowID
+        ) as? [[String: Any]]
+    else { return false }
+
+    return windowInfoList.contains { info in
+        guard let wid = info[kCGWindowNumber as String] as? CGWindowID,
+            let layer = info[kCGWindowLayer as String] as? Int,
+            layer == 0
+        else { return false }
+        return wid == targetWindowID
+    }
 }
 
 func closeWindow(pid: pid_t, windowIndex: Int) {
@@ -369,7 +380,7 @@ func closeWindow(pid: pid_t, windowIndex: Int) {
         AXUIElementPerformAction(closeButton as! AXUIElement, kAXPressAction as CFString)
         usleep(200000)  // 200ms - wait before verifying
 
-        if !windowExists(targetWindowID, pid: pid) {
+        if !windowExists(targetWindowID) {
             // If this was the last window, terminate the app to prevent it staying in dock
             if windows.count == 1, let app = app {
                 app.terminate()
@@ -393,7 +404,7 @@ func closeWindow(pid: pid_t, windowIndex: Int) {
             appleScript.executeAndReturnError(&scriptError)
             if scriptError == nil {
                 usleep(200000)  // 200ms - verify the window actually closed
-                if !windowExists(targetWindowID, pid: pid) {
+                if !windowExists(targetWindowID) {
                     // If this was the last window, terminate the app to prevent it staying in dock
                     if windows.count == 1 {
                         app.terminate()
