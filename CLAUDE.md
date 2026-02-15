@@ -11,7 +11,9 @@ Two components:
 1. **Swift helper binary** (`swift-helper/Sources/ListWindows/main.swift` → compiled to `assets/list-windows`)
    - Structured as a Swift Package Manager project for LSP support
    - Uses macOS Accessibility API + private APIs to enumerate windows across all Spaces
-   - Outputs JSON to stdout; accepts `focus <pid> <idx>` and `close <pid> <idx>` subcommands
+   - Outputs JSON to stdout; accepts subcommands: `focus`, `close`, `minimize`, `maximize`, `fullscreen`, `unfullscreen` (all `<pid> <idx>`), and `hide-app`, `show-app` (`<pid>`)
+   - CLI arg parsing is centralized via `parsePidAndIndex()` and `parsePid()` helpers
+   - Window resolution (scan + lookup + bounds check) is centralized via `resolveWindow()`
    - Automatically recompiled by `npm run dev` and `npm run build`
 
 2. **Raycast extension** (`src/window-ninja.tsx`)
@@ -71,6 +73,10 @@ The Swift binary uses five optimizations to keep enumeration fast:
 3. **Terminate app** — If the app has only one window and the above strategies failed, terminates the app entirely.
 
 If all strategies fail, returns `{"success":false}`. The `windowExists()` helper does a fresh `cgWindowScan()` + `allWindows()` pass to confirm the target CGWindowID is actually gone.
+
+## Window Minimize Strategy
+
+`minimizeWindow()` handles fullscreen windows by exiting fullscreen first, then retrying minimization for up to ~2s. The retry loop tracks the target window by `CGWindowID` (not positional index) to avoid operating on the wrong window if macOS reorders AX elements during the fullscreen transition.
 
 ## User Preferences
 

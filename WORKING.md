@@ -79,7 +79,7 @@ flowchart TB
         R1[Calls Swift binary via execFile]
         R2[Parses JSON list of windows]
         R3[Shows searchable List UI]
-        R4[Handles click → calls focus/close]
+        R4[Handles click → calls focus/close/minimize/etc.]
     end
 
     subgraph Swift["Swift Helper Binary<br/>swift-helper/list-windows.swift"]
@@ -108,6 +108,12 @@ flowchart TB
 - `(no args)` → Returns JSON list of all windows
 - `focus <pid> <idx>` → Bring that window to front
 - `close <pid> <idx>` → Close that window
+- `minimize <pid> <idx>` → Minimize that window
+- `maximize <pid> <idx>` → Unminimize that window
+- `fullscreen <pid> <idx>` → Make that window full screen
+- `unfullscreen <pid> <idx>` → Exit full screen for that window
+- `hide-app <pid>` → Hide that application
+- `show-app <pid>` → Unhide that application
 
 ---
 
@@ -458,7 +464,8 @@ The Raycast extension (`src/window-ninja.tsx`) is intentionally simple:
 1. **On mount**: Calls `list-windows` with no args, parses JSON
 2. **Filter by preference**: Checks `showMinimizedWindows` preference
 3. **Render List**: Shows each window with icon, title, app name
-4. **Handle actions**: Calls binary with `focus` or `close` subcommand
+4. **Handle actions**: Calls binary with subcommands (`focus`, `close`, `minimize`, `maximize`, `fullscreen`, `unfullscreen`, `hide-app`, `show-app`) via two parameterized helpers: `windowAction()` (pid + index) and `appAction()` (pid only). Both parse the binary's JSON response and show an error HUD on failure.
 5. **Search**: Uses built-in Raycast list filtering with `processName` and `windowTitle` as keywords
+6. **Transition-aware refresh**: Actions that trigger macOS transitions (minimize, fullscreen) use a polling refresh that short-circuits when consecutive window snapshots match, avoiding unnecessary waiting.
 
 All the complex window discovery logic lives in Swift — TypeScript just handles the UI.

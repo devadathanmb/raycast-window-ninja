@@ -45,49 +45,49 @@ async function getWindows(): Promise<WindowInfo[]> {
   return JSON.parse(stdout);
 }
 
+interface BinaryResponse {
+  success: boolean;
+  error?: string;
+}
+
+// Run a window command (pid + windowIndex) and show a HUD with the result.
+async function windowAction(
+  command: string,
+  window: WindowInfo,
+  successMessage: string,
+): Promise<void> {
+  const { stdout } = await execFileAsync(BINARY_PATH, [
+    command,
+    String(window.pid),
+    String(window.windowIndex),
+  ]);
+  const result: BinaryResponse = JSON.parse(stdout);
+  if (result.success) {
+    await showHUD(successMessage);
+  } else {
+    await showHUD(result.error ?? `Failed to ${command} window`);
+  }
+}
+
+// Run an app-level command (pid only) and show a HUD with the result.
+async function appAction(
+  command: string,
+  window: WindowInfo,
+  successMessage: string,
+): Promise<void> {
+  const { stdout } = await execFileAsync(BINARY_PATH, [command, String(window.pid)]);
+  const result: BinaryResponse = JSON.parse(stdout);
+  if (result.success) {
+    await showHUD(successMessage);
+  } else {
+    await showHUD(result.error ?? `Failed to ${command}`);
+  }
+}
+
 async function focusWindow(window: WindowInfo): Promise<void> {
   await execFileAsync(BINARY_PATH, ['focus', String(window.pid), String(window.windowIndex)]);
   await closeMainWindow();
   await popToRoot();
-}
-
-async function closeWindowAction(window: WindowInfo): Promise<void> {
-  await execFileAsync(BINARY_PATH, ['close', String(window.pid), String(window.windowIndex)]);
-  await showHUD(`Closed "${window.windowTitle}"`);
-}
-
-async function minimizeWindowAction(window: WindowInfo): Promise<void> {
-  await execFileAsync(BINARY_PATH, ['minimize', String(window.pid), String(window.windowIndex)]);
-  await showHUD(`Minimized "${window.windowTitle}"`);
-}
-
-async function makeWindowFullscreenAction(window: WindowInfo): Promise<void> {
-  await execFileAsync(BINARY_PATH, ['fullscreen', String(window.pid), String(window.windowIndex)]);
-  await showHUD(`Made "${window.windowTitle}" full screen`);
-}
-
-async function exitWindowFullscreenAction(window: WindowInfo): Promise<void> {
-  await execFileAsync(BINARY_PATH, [
-    'unfullscreen',
-    String(window.pid),
-    String(window.windowIndex),
-  ]);
-  await showHUD(`Exited full screen for "${window.windowTitle}"`);
-}
-
-async function maximizeWindowAction(window: WindowInfo): Promise<void> {
-  await execFileAsync(BINARY_PATH, ['maximize', String(window.pid), String(window.windowIndex)]);
-  await showHUD(`Maximized "${window.windowTitle}"`);
-}
-
-async function hideApplicationAction(window: WindowInfo): Promise<void> {
-  await execFileAsync(BINARY_PATH, ['hide-app', String(window.pid)]);
-  await showHUD(`Hid "${window.processName}"`);
-}
-
-async function showApplicationAction(window: WindowInfo): Promise<void> {
-  await execFileAsync(BINARY_PATH, ['show-app', String(window.pid)]);
-  await showHUD(`Showed "${window.processName}"`);
 }
 
 export default function SwitchWindows() {
@@ -124,10 +124,18 @@ export default function SwitchWindows() {
 
       setIsLoading(true);
       try {
+        let previousSnapshot = '';
         for (const waitMs of TRANSITION_REFRESH_DELAYS_MS) {
           await delay(waitMs);
           const allWindows = await getWindows();
-          setWindows(filterWindows(allWindows));
+          const filtered = filterWindows(allWindows);
+          setWindows(filtered);
+
+          // Short-circuit: if window state matches the previous fetch, the transition
+          // is complete and there's no need to keep polling.
+          const snapshot = JSON.stringify(filtered);
+          if (snapshot === previousSnapshot) break;
+          previousSnapshot = snapshot;
         }
       } catch (error) {
         console.error('Failed to refresh windows after transition:', error);
@@ -185,7 +193,7 @@ export default function SwitchWindows() {
                     icon={Icon.ArrowsExpand}
                     shortcut={{ modifiers: ['cmd'], key: 'm' }}
                     onAction={async () => {
-                      await maximizeWindowAction(window);
+                      await windowAction('maximize', window, `Maximized "${window.windowTitle}"`);
                       await refreshAfterAction();
                     }}
                   />
@@ -195,7 +203,7 @@ export default function SwitchWindows() {
                     icon={Icon.Minus}
                     shortcut={{ modifiers: ['cmd'], key: 'm' }}
                     onAction={async () => {
-                      await minimizeWindowAction(window);
+                      await windowAction('minimize', window, `Minimized "${window.windowTitle}"`);
                       await refreshAfterAction(true);
                     }}
                   />
@@ -206,9 +214,17 @@ export default function SwitchWindows() {
                   shortcut={{ modifiers: ['cmd'], key: 'f' }}
                   onAction={async () => {
                     if (window.isFullscreen) {
-                      await exitWindowFullscreenAction(window);
+                      await windowAction(
+                        'unfullscreen',
+                        window,
+                        `Exited full screen for "${window.windowTitle}"`,
+                      );
                     } else {
-                      await makeWindowFullscreenAction(window);
+                      await windowAction(
+                        'fullscreen',
+                        window,
+                        `Made "${window.windowTitle}" full screen`,
+                      );
                     }
                     await refreshAfterAction(true);
                   }}
@@ -219,7 +235,7 @@ export default function SwitchWindows() {
                   style={Action.Style.Destructive}
                   shortcut={{ modifiers: ['cmd', 'shift'], key: 'w' }}
                   onAction={async () => {
-                    await closeWindowAction(window);
+                    await windowAction('close', window, `Closed "${window.windowTitle}"`);
                     await refreshAfterAction();
                   }}
                 />
@@ -229,9 +245,9 @@ export default function SwitchWindows() {
                   shortcut={{ modifiers: ['cmd'], key: 'h' }}
                   onAction={async () => {
                     if (window.isAppHidden) {
-                      await showApplicationAction(window);
+                      await appAction('show-app', window, `Showed "${window.processName}"`);
                     } else {
-                      await hideApplicationAction(window);
+                      await appAction('hide-app', window, `Hid "${window.processName}"`);
                     }
                     await refreshAfterAction();
                   }}
