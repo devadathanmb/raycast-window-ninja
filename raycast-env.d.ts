@@ -9,18 +9,19 @@
 
 type ExtensionPreferences = {
   /** Show Minimized Windows - Show minimized (hidden) windows in the list */
-  showMinimizedWindows: boolean;
-};
+  "showMinimizedWindows": boolean
+}
 
 /** Preferences accessible in all the extension's commands */
-declare type Preferences = ExtensionPreferences;
+declare type Preferences = ExtensionPreferences
 
 declare namespace Preferences {
   /** Preferences accessible in the `window-ninja` command */
-  export type WindowNinja = ExtensionPreferences & {};
+  export type WindowNinja = ExtensionPreferences & {}
 }
 
 declare namespace Arguments {
   /** Arguments passed to the `window-ninja` command */
-  export type WindowNinja = {};
+  export type WindowNinja = {}
 }
+

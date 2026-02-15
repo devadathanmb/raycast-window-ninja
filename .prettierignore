@@ -5,3 +5,4 @@ coverage
 package-lock.json
 *.log
 .git
+raycast-env.d.ts
