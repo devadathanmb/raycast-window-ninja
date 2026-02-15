@@ -367,22 +367,17 @@ func closeWindow(pid: pid_t, windowIndex: Int) {
     let app = NSRunningApplication(processIdentifier: pid)
     let wasFullscreen = isFullscreen(window)
 
-    // Get the window ID for later verification
-    guard let targetWindowID = getWindowID(of: window) else {
-        print("{\"success\":false,\"error\":\"Could not get window ID\"}")
-        return
-    }
-
-    // Strategy 1: Try clicking the close button
-    var closeButtonValue: AnyObject?
-    let err = AXUIElementCopyAttributeValue(
-        window, kAXCloseButtonAttribute as CFString, &closeButtonValue)
-    if err == .success, let closeButton = closeButtonValue {
-        AXUIElementPerformAction(closeButton as! AXUIElement, kAXPressAction as CFString)
-
-        if !wasFullscreen {
-            usleep(200000)  // 200ms - wait before verifying
-            if !windowExists(targetWindowID) {
+    // Strategy 1: AX close button — the universal method used by AltTab, AeroSpace, etc.
+    // For fullscreen windows the close button is unreliable (some apps accept but ignore it),
+    // so we skip straight to AppleScript which handles fullscreen properly.
+    if !wasFullscreen {
+        var closeButtonValue: AnyObject?
+        let err = AXUIElementCopyAttributeValue(
+            window, kAXCloseButtonAttribute as CFString, &closeButtonValue)
+        if err == .success, let closeButton = closeButtonValue {
+            let pressErr = AXUIElementPerformAction(
+                closeButton as! AXUIElement, kAXPressAction as CFString)
+            if pressErr == .success {
                 if windows.count == 1, let app = app {
                     app.terminate()
                 }
@@ -390,11 +385,9 @@ func closeWindow(pid: pid_t, windowIndex: Int) {
                 return
             }
         }
-        // Fullscreen: close button is unreliable (accepted but ignored by some apps).
-        // Fall through to AppleScript which handles fullscreen windows properly.
     }
 
-    // Strategy 2: Try AppleScript - more reliable for fullscreen and terminal emulators
+    // Strategy 2: AppleScript — handles fullscreen windows and apps where AX close button fails.
     if let app = app, let bundleId = app.bundleIdentifier {
         let title = windows[windowIndex].title
         let escapedTitle = title.replacingOccurrences(of: "\\", with: "\\\\")
@@ -405,24 +398,11 @@ func closeWindow(pid: pid_t, windowIndex: Int) {
             var scriptError: NSDictionary?
             appleScript.executeAndReturnError(&scriptError)
             if scriptError == nil {
-                // Fullscreen: the Space-collapse animation keeps the CGWindowID alive
-                // well beyond 200ms. AppleScript succeeded so trust it — skip verification.
-                if wasFullscreen {
-                    if windows.count == 1 {
-                        app.terminate()
-                    }
-                    print("{\"success\":true,\"method\":\"applescript\"}")
-                    return
+                if windows.count == 1 {
+                    app.terminate()
                 }
-
-                usleep(200000)  // 200ms - verify the window actually closed
-                if !windowExists(targetWindowID) {
-                    if windows.count == 1 {
-                        app.terminate()
-                    }
-                    print("{\"success\":true,\"method\":\"applescript\"}")
-                    return
-                }
+                print("{\"success\":true,\"method\":\"applescript\"}")
+                return
             }
         }
     }

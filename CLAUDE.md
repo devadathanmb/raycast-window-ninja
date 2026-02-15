@@ -66,13 +66,29 @@ The Swift binary uses five optimizations to keep enumeration fast:
 
 ## Window Close Strategy
 
-`closeWindow()` uses a three-strategy cascade with verification:
+`closeWindow()` uses a two-strategy cascade **without post-close verification**:
 
-1. **Close button** — Gets the AX close button (`kAXCloseButtonAttribute`) and presses it. Waits 200ms, then verifies the window is gone via `windowExists()`.
-2. **AppleScript** — Falls back to `tell application id "..." to close (first window whose name is "...")`. Matches by window title (not index, since AX enumeration order differs from AppleScript's). Also verifies with `windowExists()`.
+1. **Close button** (non-fullscreen only) — Gets the AX close button (`kAXCloseButtonAttribute`) and presses it. If `AXUIElementPerformAction` returns `.success`, reports success immediately.
+2. **AppleScript** — Falls back to `tell application id "..." to close (first window whose name is "...")`. Matches by window title (not index, since AX enumeration order differs from AppleScript's). If AppleScript returns no error, reports success immediately.
 3. **Terminate app** — If the app has only one window and the above strategies failed, terminates the app entirely.
 
-If all strategies fail, returns `{"success":false}`. The `windowExists()` helper does a lightweight `CGWindowListCopyWindowInfo` scan (no AX calls or brute-force) to confirm the target CGWindowID is actually gone.
+If all strategies fail, returns `{"success":false}`.
+
+### Why no post-close verification (DO NOT re-add)
+
+Previous versions used `windowExists()` (a `CGWindowListCopyWindowInfo` scan) after each strategy to confirm the window was gone. This was removed because:
+
+- **Fullscreen windows**: macOS keeps the CGWindowID alive during the Space-collapse animation (~500ms-1s+). A 200ms check always sees the window as "still there", causing false failure reports.
+- **Non-fullscreen windows**: Some apps (e.g. iTerm2) also exhibit delayed CGWindowID cleanup, causing the same false failures.
+- **Close button unreliable on fullscreen**: For apps like iTerm2, `AXUIElementPerformAction` on the close button returns `.success` but doesn't actually close fullscreen windows. Only AppleScript works. So for fullscreen windows, strategy 1 is skipped entirely.
+
+This matches how every mature macOS window manager handles closing:
+
+- **AltTab** (`lwouis/alt-tab-macos`, `src/logic/Window.swift`) — fires the AX close button with `try?` (fire-and-forget), no verification. Uses `kAXUIElementDestroyedNotification` reactively to update its window list.
+- **AeroSpace** (`nikitabobko/AeroSpace`, `Sources/AppBundle/tree/MacApp.swift`) — fires the AX close button, removes from internal tracking on AX success, no verification.
+- **Rectangle** and **Amethyst** — don't implement window closing at all.
+
+None of these projects use AppleScript fallbacks or poll `CGWindowListCopyWindowInfo` post-close. The `windowExists()` helper is retained in the codebase for use by other operations (e.g. minimize verification) but is intentionally not used in the close path.
 
 ## Window Minimize Strategy
 
