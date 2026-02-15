@@ -26,7 +26,7 @@ So armed with Claude, DeepWiki, and approximately zero Swift knowledge, I decide
 
 ## Demo
 
-https://github.com/user-attachments/assets/31107346-284e-499c-97a4-289db550c47c
+https://github.com/user-attachments/assets/099fa2f1-58b6-40a3-a1a3-41e451118dab
 
 ## Installation
 
