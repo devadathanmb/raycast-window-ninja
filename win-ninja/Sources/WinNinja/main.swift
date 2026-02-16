@@ -529,15 +529,33 @@ func showApplication(pid: pid_t) {
     }
 }
 
-// Usage: list-windows              → JSON array of all windows
-//        list-windows focus <pid> <index>  → activate that window
-//        list-windows close <pid> <index>  → close that window
-//        list-windows minimize <pid> <index>  → minimize that window
-//        list-windows maximize <pid> <index>  → unminimize that window
-//        list-windows fullscreen <pid> <index>  → make that window full screen
-//        list-windows unfullscreen <pid> <index>  → exit full screen for that window
-//        list-windows hide-app <pid>  → hide that application
-//        list-windows show-app <pid>  → unhide that application
+// Usage: win-ninja list                         → JSON array of all windows
+//        win-ninja focus <pid> <index>          → activate that window
+//        win-ninja close <pid> <index>          → close that window
+//        win-ninja minimize <pid> <index>       → minimize that window
+//        win-ninja maximize <pid> <index>       → unminimize that window
+//        win-ninja fullscreen <pid> <index>     → make that window full screen
+//        win-ninja unfullscreen <pid> <index>   → exit full screen for that window
+//        win-ninja hide-app <pid>               → hide that application
+//        win-ninja show-app <pid>               → unhide that application
+
+func printHelp() {
+    let help = """
+        Usage: win-ninja <command> [arguments]
+
+        Commands:
+          list                        Output JSON array of all open windows
+          focus <pid> <index>         Activate and raise a window
+          close <pid> <index>         Close a window
+          minimize <pid> <index>      Minimize a window
+          maximize <pid> <index>      Unminimize a window
+          fullscreen <pid> <index>    Make a window full screen
+          unfullscreen <pid> <index>  Exit full screen for a window
+          hide-app <pid>              Hide an application
+          show-app <pid>              Unhide an application
+        """
+    print(help)
+}
 
 // Parse <pid> <windowIndex> from CLI args, or exit with usage message.
 func parsePidAndIndex(command: String) -> (pid: pid_t, windowIndex: Int) {
@@ -546,7 +564,7 @@ func parsePidAndIndex(command: String) -> (pid: pid_t, windowIndex: Int) {
         let pid = Int32(args[2]),
         let idx = Int(args[3])
     else {
-        fputs("Usage: list-windows \(command) <pid> <windowIndex>\n", stderr)
+        fputs("Usage: win-ninja \(command) <pid> <windowIndex>\n", stderr)
         exit(1)
     }
     return (pid, idx)
@@ -558,7 +576,7 @@ func parsePid(command: String) -> pid_t {
     guard args.count >= 3,
         let pid = Int32(args[2])
     else {
-        fputs("Usage: list-windows \(command) <pid>\n", stderr)
+        fputs("Usage: win-ninja \(command) <pid>\n", stderr)
         exit(1)
     }
     return pid
@@ -567,9 +585,12 @@ func parsePid(command: String) -> pid_t {
 let args = CommandLine.arguments
 
 if args.count < 2 {
-    listWindows()
+    printHelp()
 } else {
     switch args[1] {
+    case "list":
+        listWindows()
+
     case "focus":
         let (pid, idx) = parsePidAndIndex(command: "focus")
         focusWindow(pid: pid, windowIndex: idx)
@@ -603,6 +624,6 @@ if args.count < 2 {
         showApplication(pid: pid)
 
     default:
-        listWindows()
+        printHelp()
     }
 }

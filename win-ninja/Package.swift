@@ -2,20 +2,20 @@
 import PackageDescription
 
 let package = Package(
-    name: "ListWindows",
+    name: "WinNinja",
     platforms: [
         .macOS(.v10_15)
     ],
     products: [
         .executable(
-            name: "list-windows",
-            targets: ["ListWindows"]
+            name: "win-ninja",
+            targets: ["WinNinja"]
         )
     ],
     targets: [
         .executableTarget(
-            name: "ListWindows",
-            path: "Sources/ListWindows"
+            name: "WinNinja",
+            path: "Sources/WinNinja"
         )
     ]
 )

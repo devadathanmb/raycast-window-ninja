@@ -65,11 +65,13 @@ Open Raycast, type `Window Ninja`, search by window title or app name, and press
 This extension is blazingly fast. Below is the benchmark of the binary, done using [hyperfine](https://github.com/sharkdp/hyperfine):
 
 ```
-❯ hyperfine --warmup 20 --runs 100 ./assets/list-windows 2>&1
-Benchmark 1: ./assets/list-windows
-  Time (mean ± σ):      45.5 ms ±   2.8 ms    [User: 4.6 ms, System: 3.5 ms]
-  Range (min … max):    39.4 ms …  55.5 ms    100 runs
+❯ hyperfine --warmup 30 --runs 100 "./assets/win-ninja list"
+Benchmark 1: ./assets/win-ninja list
+  Time (mean ± σ):      48.4 ms ±   3.0 ms    [User: 6.9 ms, System: 9.4 ms]
+  Range (min … max):    42.0 ms …  55.7 ms    100 runs
 ```
+
+Tested with 10 fullscreen windows of various applications open across Spaces.
 
 ## Development
 
@@ -83,7 +85,7 @@ Make your changes to the TypeScript files in `src/`. The extension will automati
 
 ### Modifying the Swift Helper
 
-If you modify the Swift helper in the `swift-helper/` directory, recompile it:
+If you modify the Swift helper in the `win-ninja/` directory, recompile it:
 
 ```bash
 npm run build:swift

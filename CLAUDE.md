@@ -8,10 +8,11 @@
 
 Two components:
 
-1. **Swift helper binary** (`swift-helper/Sources/ListWindows/main.swift` → compiled to `assets/list-windows`)
+1. **Swift helper binary** (`win-ninja/Sources/WinNinja/main.swift` → compiled to `assets/win-ninja`)
    - Structured as a Swift Package Manager project for LSP support
    - Uses macOS Accessibility API + private APIs to enumerate windows across all Spaces
-   - Outputs JSON to stdout; accepts subcommands: `focus`, `close`, `minimize`, `maximize`, `fullscreen`, `unfullscreen` (all `<pid> <idx>`), and `hide-app`, `show-app` (`<pid>`)
+   - Outputs JSON to stdout via the `list` subcommand; no-args prints help
+   - Accepts subcommands: `list`, `focus`, `close`, `minimize`, `maximize`, `fullscreen`, `unfullscreen` (all `<pid> <idx>`), and `hide-app`, `show-app` (`<pid>`)
    - CLI arg parsing is centralized via `parsePidAndIndex()` and `parsePid()` helpers
    - Window resolution (scan + lookup + bounds check) is centralized via `resolveWindow()`
    - Automatically recompiled by `npm run dev` and `npm run build`

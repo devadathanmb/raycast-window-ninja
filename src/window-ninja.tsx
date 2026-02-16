@@ -33,7 +33,7 @@ interface Preferences {
   showMinimizedWindows: boolean;
 }
 
-const BINARY_PATH = join(environment.assetsPath, 'list-windows');
+const BINARY_PATH = join(environment.assetsPath, 'win-ninja');
 const TRANSITION_REFRESH_DELAYS_MS = [120, 350, 700];
 
 function delay(ms: number): Promise<void> {
@@ -41,7 +41,7 @@ function delay(ms: number): Promise<void> {
 }
 
 async function getWindows(): Promise<WindowInfo[]> {
-  const { stdout } = await execFileAsync(BINARY_PATH);
+  const { stdout } = await execFileAsync(BINARY_PATH, ['list']);
   return JSON.parse(stdout);
 }
 

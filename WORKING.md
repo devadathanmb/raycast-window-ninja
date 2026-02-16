@@ -82,7 +82,7 @@ flowchart TB
         R4[Handles click → calls focus/close/minimize/etc.]
     end
 
-    subgraph Swift["Swift Helper Binary<br/>swift-helper/list-windows.swift"]
+    subgraph Swift["Swift Helper Binary<br/>win-ninja/Sources/WinNinja/main.swift"]
         S1[cgWindowScan]
         S2[axWindows]
         S3[windowsByBruteForce]
@@ -105,7 +105,8 @@ flowchart TB
 
 **Commands:**
 
-- `(no args)` → Returns JSON list of all windows
+- `list` → Returns JSON list of all windows
+- `(no args)` → Prints help
 - `focus <pid> <idx>` → Bring that window to front
 - `close <pid> <idx>` → Close that window
 - `minimize <pid> <idx>` → Minimize that window
@@ -461,7 +462,7 @@ These are **real macOS system functions** — Apple wrote them, they're just not
 
 The Raycast extension (`src/window-ninja.tsx`) is intentionally simple:
 
-1. **On mount**: Calls `list-windows` with no args, parses JSON
+1. **On mount**: Calls `win-ninja list`, parses JSON
 2. **Filter by preference**: Checks `showMinimizedWindows` preference
 3. **Render List**: Shows each window with icon, title, app name
 4. **Handle actions**: Calls binary with subcommands (`focus`, `close`, `minimize`, `maximize`, `fullscreen`, `unfullscreen`, `hide-app`, `show-app`) via two parameterized helpers: `windowAction()` (pid + index) and `appAction()` (pid only). Both parse the binary's JSON response and show an error HUD on failure.
