@@ -29,10 +29,6 @@ interface WindowInfo {
   isAppHidden: boolean;
 }
 
-interface Preferences {
-  showMinimizedWindows: boolean;
-}
-
 const BINARY_PATH = join(environment.assetsPath, 'win-ninja');
 const TRANSITION_REFRESH_DELAYS_MS = [120, 350, 700];
 
