@@ -4,9 +4,7 @@
   "compilerOptions": {
     "allowJs": true,
     "checkJs": false,
-    "composite": false,
-    "declaration": true,
-    "declarationMap": true,
+    "noEmit": true,
     "esModuleInterop": true,
     "forceConsistentCasingInFileNames": true,
     "isolatedModules": true,

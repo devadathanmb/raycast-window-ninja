@@ -9,6 +9,8 @@ import {
   List,
   popToRoot,
   showHUD,
+  showToast,
+  Toast,
 } from '@raycast/api';
 import { execFile } from 'child_process';
 import { join } from 'path';
@@ -105,6 +107,11 @@ export default function SwitchWindows() {
       setWindows(filterWindows(allWindows));
     } catch (error) {
       console.error('Failed to list windows:', error);
+      await showToast({
+        style: Toast.Style.Failure,
+        title: 'Failed to list windows',
+        message: error instanceof Error ? error.message : String(error),
+      });
       setWindows([]);
     } finally {
       setIsLoading(false);
