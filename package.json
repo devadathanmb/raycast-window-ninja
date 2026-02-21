@@ -33,13 +33,13 @@
     "@raycast/api": "^1.104.6"
   },
   "devDependencies": {
-    "@raycast/eslint-config": "^1.0.11",
-    "@types/node": "22.13.4",
-    "@types/react": "19.0.8",
-    "eslint": "^8.57.0",
+    "@raycast/eslint-config": "^2.1.1",
+    "@types/node": "25.3.0",
+    "@types/react": "19.2.14",
+    "eslint": "^10.0.1",
     "husky": "^9.1.7",
-    "prettier": "^3.4.2",
-    "typescript": "^5.7.3"
+    "prettier": "^3.8.1",
+    "typescript": "^5.9.3"
   },
   "scripts": {
     "build:swift": "cd win-ninja && swift build -c release && cp .build/release/win-ninja ../assets/win-ninja",
