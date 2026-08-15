@@ -9,7 +9,7 @@
     "System",
     "Productivity"
   ],
-  "license": "MIT",
+  "license": "AGPL-3.0-only",
   "commands": [
     {
       "name": "window-ninja",
@@ -30,26 +30,26 @@
     }
   ],
   "dependencies": {
-    "@raycast/api": "^1.104.6"
+    "@raycast/api": "^1.104.24"
   },
   "devDependencies": {
-    "@raycast/eslint-config": "^2.1.1",
-    "@types/node": "25.3.0",
-    "@types/react": "19.2.14",
-    "eslint": "^10.0.1",
+    "@raycast/eslint-config": "^2.2.0",
+    "@types/node": "^22.19.17",
+    "@types/react": "^19.2.18",
+    "eslint": "^10.8.1",
     "husky": "^9.1.7",
-    "prettier": "^3.8.1",
+    "prettier": "^3.9.6",
     "typescript": "^5.9.3"
   },
   "scripts": {
     "build:swift": "cd win-ninja && swift build -c release && cp .build/release/win-ninja ../assets/win-ninja",
-    "build": "npm run build:swift && ray build --skip-types -o dist",
+    "build": "npm run build:swift && ray build -o dist",
     "dev": "npm run build:swift && ray develop",
-    "fix-lint": "ray lint --fix",
+    "fix-lint": "eslint src --fix && prettier --write . && npm run format:swift",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
-    "lint": "ray lint",
-    "format:swift": "swift-format format -i -r win-ninja/Sources/",
+    "lint": "eslint src && prettier --check . && swift format lint -r win-ninja/Sources/",
+    "format:swift": "swift format -i -r win-ninja/Sources/",
     "typecheck": "tsc --noEmit",
     "prepare": "husky"
   }
