@@ -46,16 +46,16 @@ You switch between Spaces using trackpad gestures (swipe left/right with three f
 
 You might think "macOS should just give me a list of all windows" — but it doesn't work that way.
 
-macOS has **several APIs** to get window information, but each has a limitation:
+macOS has several APIs for window information, and each has a limitation:
 
-| API                                             | Gets windows on ALL Spaces? | Gets window titles? | Requires         |
-| ----------------------------------------------- | :-------------------------: | :-----------------: | ---------------- |
-| AppleScript (System Events)                     |   No (current Space only)   |         Yes         | Accessibility    |
-| AXUIElement (standard)                          |   No (current Space only)   |         Yes         | Accessibility    |
-| CGWindowListCopyWindowInfo                      |             Yes             |    No (just IDs)    | Screen Recording |
-| Private API `_AXUIElementCreateWithRemoteToken` |             Yes             |         Yes         | Accessibility    |
+| API                                             | Gets windows on ALL Spaces? | Gets window titles? | Requires                   |
+| ----------------------------------------------- | :-------------------------: | :-----------------: | -------------------------- |
+| AppleScript (System Events)                     |   No (current Space only)   |         Yes         | Accessibility              |
+| AXUIElement (standard)                          |  Not reliably in practice   |         Yes         | Accessibility              |
+| CGWindowListCopyWindowInfo                      |             Yes             | No titles used here | No permission for IDs/PIDs |
+| Private API `_AXUIElementCreateWithRemoteToken` | Best-effort AX acquisition  |         Yes         | Accessibility              |
 
-The key issue: **most APIs only see windows on the current Space**. If Chrome is fullscreened on Desktop 2 and you're on Desktop 1, those standard APIs won't see it at all.
+Apple does not document `kAXWindows` as current-Space-only. AltTab and AeroSpace both observe that it can omit windows on inactive Spaces, so Window Ninja treats the standard result as incomplete.
 
 ---
 
@@ -105,14 +105,14 @@ flowchart TB
 
 **Commands:**
 
-- `list` → Returns JSON list of all windows
+- `list` → Returns JSON for all discovered windows
 - `(no args)` → Prints help
-- `focus <pid> <idx>` → Bring that window to front
-- `close <pid> <idx>` → Close that window
-- `minimize <pid> <idx>` → Minimize that window
-- `maximize <pid> <idx>` → Unminimize that window
-- `fullscreen <pid> <idx>` → Make that window full screen
-- `unfullscreen <pid> <idx>` → Exit full screen for that window
+- `focus <pid> <window-id>` → Bring that window to front
+- `close <pid> <window-id>` → Close that window
+- `minimize <pid> <window-id>` → Minimize that window
+- `maximize <pid> <window-id>` → Unminimize that window
+- `fullscreen <pid> <window-id>` → Make that window full screen
+- `unfullscreen <pid> <window-id>` → Exit full screen for that window
 - `hide-app <pid>` → Hide that application
 - `show-app <pid>` → Unhide that application
 
@@ -277,27 +277,29 @@ This correctly handles all cases:
 ### Step 5: Combine Results
 
 ```swift
-func allWindows(for pid: pid_t, realWIDs: Set<CGWindowID>, expectedCount: Int) -> [(element: AXUIElement, title: String)]
+func allWindows(
+    for pid: pid_t,
+    realWIDs: Set<CGWindowID>,
+    expectedCount: Int
+) -> [ResolvedWindow]
 ```
 
-Finally, we merge the two sources. Returns `(element, title)` tuples so titles are read only once (each title read is an IPC round-trip):
+`ResolvedWindow` retains the AX element, title, and `CGWindowID`. The WID provides stable identity across helper invocations.
 
-1. Start with **standard API results** (always correct for current Space)
-2. Record their CGWindowIDs as "seen"
-3. **If standard already found all windows** (count >= `expectedCount`), skip brute-force entirely
-4. Otherwise, add **brute-force results** only if:
-   - CGWindowID is not already seen (not a duplicate)
-   - CGWindowID is in `realWIDs` (not a tab)
+1. Read standard AX windows and map each element to a WID.
+2. Deduplicate the standard result by WID.
+3. Skip brute force when the resolved WID count reaches the WindowServer count.
+4. Otherwise add brute-force results whose WIDs belong to a Space and are not already present.
 
 ---
 
 ## How Focusing a Window Works
 
 ```swift
-func focusWindow(pid: pid_t, windowIndex: Int)
+func focusWindow(pid: pid_t, windowId: CGWindowID) -> ActionResponse
 ```
 
-When the user clicks a window in the Raycast list:
+When the user selects a window:
 
 ```mermaid
 sequenceDiagram
@@ -305,75 +307,40 @@ sequenceDiagram
     participant Raycast
     participant Swift
 
-    User->>Raycast: Click "VS Code - main.ts"
-    Raycast->>Swift: execFile("focus 5678 0")
-    Swift->>Swift: NSRunningApplication.activate()
-    Note over Swift: macOS switches Space automatically
-    Swift->>Swift: allWindows() to get fresh AX references
-    Swift->>Swift: AXUIElementPerformAction(kAXRaiseAction)
-    Swift-->>Raycast: {"success":true}
-    Raycast-->>User: Window is now in front
+    User->>Raycast: Select a window
+    Raycast->>Swift: focus PID WID
+    Swift->>Swift: Reacquire AX element by WID
+    Swift->>Swift: Activate application
+    Swift->>Swift: Perform AX raise
+    Swift-->>Raycast: One JSON response
+    Raycast-->>User: Close only after success
 ```
 
-1. **Activate the app**: `NSRunningApplication.activate()` brings the app to front (macOS automatically switches to the right Space)
-2. **Re-discover windows**: Get fresh AX references
-3. **Raise the window**: `AXUIElementPerformAction(kAXRaiseAction)` brings that specific window in front of other windows of the same app
+The helper resolves the selected `CGWindowID` before activating the application. If the window disappeared, Raycast stays open and shows the returned error.
 
 ---
 
 ## How Closing a Window Works
 
 ```swift
-func closeWindow(pid: pid_t, windowIndex: Int)
+func closeWindow(pid: pid_t, windowId: CGWindowID) -> ActionResponse
 ```
 
-Closing a window is surprisingly unreliable on macOS — not every app responds to every close method. Window Ninja uses a **three-strategy cascade** that tries each approach in order, verifying success before moving on:
+Closing uses the selected WID throughout:
 
 ```mermaid
 flowchart TD
-    Start[closeWindow called] --> Find[Find target window via allWindows]
-    Find --> GetID[Get CGWindowID for verification]
-    GetID --> S1[Strategy 1: Press AX close button]
-    S1 --> V1{windowExists?}
-    V1 -->|Gone| Done1[Return success: closeButton]
-    V1 -->|Still there| S2[Strategy 2: AppleScript close by title]
-    S2 --> V2{windowExists?}
-    V2 -->|Gone| Done2[Return success: applescript]
-    V2 -->|Still there| S3{Only 1 window in app?}
-    S3 -->|Yes| Term[Strategy 3: Terminate app]
-    Term --> Done3[Return success: terminate]
-    S3 -->|No| Fail[Return success: false]
+    Start[Resolve PID and WID] --> Found{Window found?}
+    Found -->|No| Fail[Return structured failure]
+    Found -->|Yes| Full{Fullscreen?}
+    Full -->|Yes| Exit[Exit fullscreen and reacquire by WID]
+    Full -->|No| Button[Read AX close button]
+    Exit --> Button
+    Button --> Press[Perform AX press]
+    Press --> Result[Return one JSON response]
 ```
 
-### Strategy 1: Close Button (AX API)
-
-1. Get the close button via `kAXCloseButtonAttribute`
-2. Press it via `AXUIElementPerformAction(kAXPressAction)`
-3. Wait 200ms, then verify with `windowExists()`
-
-This works for most standard apps.
-
-### Strategy 2: AppleScript
-
-Falls back to AppleScript when the close button doesn't work (common with terminal emulators):
-
-```applescript
-tell application id "com.example.app" to close (first window whose name is "My Window")
-```
-
-The window is matched **by title**, not by index — AX enumeration order has no guaranteed relationship to AppleScript's window ordering. The title is escaped for special characters. After execution, `windowExists()` verifies the window actually closed (a nil AppleScript error doesn't guarantee close — a confirmation dialog may appear).
-
-### Strategy 3: Terminate App
-
-If the app has only one window and both strategies above failed, terminate the app entirely via `NSRunningApplication.terminate()`.
-
-### Verification Helper
-
-```swift
-func windowExists(_ targetWindowID: CGWindowID) -> Bool
-```
-
-Does a lightweight `CGWindowListCopyWindowInfo` scan (no AX calls or brute-force) and checks if the target CGWindowID is still present among layer-0 windows. Used by both Strategy 1 and Strategy 2 to confirm the window is actually gone.
+The helper does not use AppleScript or terminate the application. **Close Window** only presses the selected window's AX close button. A save confirmation can keep the window open after the AX press; the helper reports that the close request was accepted, not that the application completed every resulting dialog.
 
 ---
 
@@ -428,11 +395,11 @@ Real windows are found quickly; we don't waste time scanning further.
 
 ### 4. Skip Brute-Force When Unnecessary
 
-`cgWindowScan()` counts real windows per PID. If the standard AX API already found all of an app's windows (they're all on the current Space), brute-force is skipped entirely for that app.
+`cgWindowScan()` counts real windows per PID. If the standard AX result resolves at least that many unique WIDs, the helper skips brute force.
 
 ### 5. Single Title Read
 
-`allWindows()` returns `(element, title)` tuples. Titles are read once during discovery and reused when building JSON output — avoiding a redundant IPC round-trip per window.
+`ResolvedWindow` stores each title with its AX element and WID, avoiding a second AX title read while encoding the JSON result.
 
 ---
 
@@ -447,26 +414,26 @@ The private APIs used are:
 | `CGSCopySpacesForWindows`           | Check if a window belongs to a Space (distinguishes windows from tabs) |
 | `CGSMainConnectionID`               | Required by `CGSCopySpacesForWindows`                                  |
 
-These are **real macOS system functions** — Apple wrote them, they're just not documented. They have been stable across macOS versions but could theoretically break in future updates.
+These symbols are undocumented and have no compatibility guarantee. They work on the tested macOS versions, but an OS update can change or remove them without notice.
 
 ---
 
 ## Permissions
 
-- **Accessibility**: Required. The Swift binary inherits Raycast's Accessibility trust.
-- **Screen Recording**: Not required. Window titles come from Accessibility API, not CGWindowList.
+- **Accessibility**: Required for AX window discovery and control. macOS evaluates trust in the helper's execution context.
+- **Screen Recording**: Not required. Window titles come from Accessibility, while the CoreGraphics scan uses WIDs, layers, and owner PIDs.
 
 ---
 
 ## TypeScript Side
 
-The Raycast extension (`src/window-ninja.tsx`) is intentionally simple:
+The Raycast extension (`src/window-ninja.tsx`) owns the UI and helper protocol:
 
-1. **On mount**: Calls `win-ninja list`, parses JSON
-2. **Filter by preference**: Checks `showMinimizedWindows` preference
-3. **Render List**: Shows each window with icon, title, app name
-4. **Handle actions**: Calls binary with subcommands (`focus`, `close`, `minimize`, `maximize`, `fullscreen`, `unfullscreen`, `hide-app`, `show-app`) via two parameterized helpers: `windowAction()` (pid + index) and `appAction()` (pid only). Both parse the binary's JSON response and show an error HUD on failure.
-5. **Search**: Uses built-in Raycast list filtering with `processName` and `windowTitle` as keywords
-6. **Transition-aware refresh**: Actions that trigger macOS transitions (minimize, fullscreen) use a polling refresh that short-circuits when consecutive window snapshots match, avoiding unnecessary waiting.
+1. **Load**: Calls `win-ninja list` with a five-second process timeout.
+2. **Filter**: Applies the minimized-window preference and Raycast's native fuzzy search.
+3. **Render**: Keys items by PID and WID.
+4. **Act**: Sends PID and WID for window actions, parses one JSON response, and keeps the List open on failure.
+5. **Report**: Uses Toasts for management actions that keep the List visible.
+6. **Refresh**: Polls at 120, 350, and 700 ms after transition actions and compares normalized window state rather than raw JSON encoding.
 
 All the complex window discovery logic lives in Swift — TypeScript just handles the UI.

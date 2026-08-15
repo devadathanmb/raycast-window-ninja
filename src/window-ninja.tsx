@@ -5,15 +5,15 @@ import {
   environment,
   getPreferenceValues,
   Icon,
-  Image,
+  Keyboard,
   List,
-  popToRoot,
-  showHUD,
+  PopToRootType,
   showToast,
   Toast,
 } from '@raycast/api';
 import { execFile } from 'child_process';
 import { join } from 'path';
+import { setTimeout as delay } from 'timers/promises';
 import { useCallback, useEffect, useState } from 'react';
 import { promisify } from 'util';
 
@@ -22,25 +22,12 @@ const execFileAsync = promisify(execFile);
 interface WindowInfo {
   processName: string;
   windowTitle: string;
-  bundleId: string;
   appPath: string;
   pid: number;
-  windowIndex: number;
+  windowId: number;
   isMinimized: boolean;
   isFullscreen: boolean;
   isAppHidden: boolean;
-}
-
-const BINARY_PATH = join(environment.assetsPath, 'win-ninja');
-const TRANSITION_REFRESH_DELAYS_MS = [120, 350, 700];
-
-function delay(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-async function getWindows(): Promise<WindowInfo[]> {
-  const { stdout } = await execFileAsync(BINARY_PATH, ['list']);
-  return JSON.parse(stdout);
 }
 
 interface BinaryResponse {
@@ -48,44 +35,97 @@ interface BinaryResponse {
   error?: string;
 }
 
-// Run a window command (pid + windowIndex) and show a HUD with the result.
-async function windowAction(
-  command: string,
-  window: WindowInfo,
-  successMessage: string,
-): Promise<void> {
-  const { stdout } = await execFileAsync(BINARY_PATH, [
-    command,
-    String(window.pid),
-    String(window.windowIndex),
-  ]);
-  const result: BinaryResponse = JSON.parse(stdout);
-  if (result.success) {
-    await showHUD(successMessage);
-  } else {
-    await showHUD(result.error ?? `Failed to ${command} window`);
+const BINARY_PATH = join(environment.assetsPath, 'win-ninja');
+const HELPER_TIMEOUT_MS = 5_000;
+const TRANSITION_REFRESH_DEADLINES_MS = [120, 350, 700];
+
+async function runHelper<T>(args: string[]): Promise<T> {
+  const { stdout } = await execFileAsync(BINARY_PATH, args, {
+    timeout: HELPER_TIMEOUT_MS,
+  });
+  const output = stdout.trim();
+  if (!output) {
+    throw new Error('Window helper returned an empty response');
   }
+  return JSON.parse(output) as T;
 }
 
-// Run an app-level command (pid only) and show a HUD with the result.
-async function appAction(
-  command: string,
-  window: WindowInfo,
-  successMessage: string,
-): Promise<void> {
-  const { stdout } = await execFileAsync(BINARY_PATH, [command, String(window.pid)]);
-  const result: BinaryResponse = JSON.parse(stdout);
-  if (result.success) {
-    await showHUD(successMessage);
-  } else {
-    await showHUD(result.error ?? `Failed to ${command}`);
+async function getWindows(): Promise<WindowInfo[]> {
+  const windows = await runHelper<unknown>(['list']);
+  if (!Array.isArray(windows)) {
+    throw new Error('Window helper returned an invalid window list');
+  }
+  return windows as WindowInfo[];
+}
+
+async function runAction(args: string[], successMessage: string): Promise<boolean> {
+  try {
+    const result = await runHelper<BinaryResponse>(args);
+    if (!result.success) {
+      await showToast({
+        style: Toast.Style.Failure,
+        title: 'Window action failed',
+        message: result.error ?? 'The helper did not provide an error',
+      });
+      return false;
+    }
+
+    await showToast({
+      style: Toast.Style.Success,
+      title: successMessage,
+    });
+    return true;
+  } catch (error) {
+    await showToast({
+      style: Toast.Style.Failure,
+      title: 'Window action failed',
+      message: error instanceof Error ? error.message : String(error),
+    });
+    return false;
   }
 }
 
 async function focusWindow(window: WindowInfo): Promise<void> {
-  await execFileAsync(BINARY_PATH, ['focus', String(window.pid), String(window.windowIndex)]);
-  await closeMainWindow();
-  await popToRoot();
+  try {
+    const result = await runHelper<BinaryResponse>([
+      'focus',
+      String(window.pid),
+      String(window.windowId),
+    ]);
+    if (!result.success) {
+      await showToast({
+        style: Toast.Style.Failure,
+        title: 'Failed to switch windows',
+        message: result.error ?? 'The selected window is no longer available',
+      });
+      return;
+    }
+
+    await closeMainWindow({ popToRootType: PopToRootType.Immediate });
+  } catch (error) {
+    await showToast({
+      style: Toast.Style.Failure,
+      title: 'Failed to switch windows',
+      message: error instanceof Error ? error.message : String(error),
+    });
+  }
+}
+
+function windowStateSignature(windows: WindowInfo[]): string {
+  return JSON.stringify(
+    windows
+      .map((window): [number, number, string, boolean, boolean, boolean] => [
+        window.pid,
+        window.windowId,
+        window.windowTitle,
+        window.isMinimized,
+        window.isFullscreen,
+        window.isAppHidden,
+      ])
+      .sort(([leftPid, leftWindowId], [rightPid, rightWindowId]) =>
+        leftPid === rightPid ? leftWindowId - rightWindowId : leftPid - rightPid,
+      ),
+  );
 }
 
 export default function SwitchWindows() {
@@ -128,26 +168,26 @@ export default function SwitchWindows() {
       setIsLoading(true);
       try {
         let previousSnapshot = '';
-        for (const waitMs of TRANSITION_REFRESH_DELAYS_MS) {
-          await delay(waitMs);
+        let previousDeadline = 0;
+        for (const deadline of TRANSITION_REFRESH_DEADLINES_MS) {
+          await delay(deadline - previousDeadline);
+          previousDeadline = deadline;
+
           const allWindows = await getWindows();
           const filtered = filterWindows(allWindows);
           setWindows(filtered);
 
-          // Short-circuit: if window state matches the previous fetch, the transition
-          // is complete and there's no need to keep polling.
-          const snapshot = JSON.stringify(filtered);
+          const snapshot = windowStateSignature(filtered);
           if (snapshot === previousSnapshot) break;
           previousSnapshot = snapshot;
         }
       } catch (error) {
         console.error('Failed to refresh windows after transition:', error);
-        try {
-          const allWindows = await getWindows();
-          setWindows(filterWindows(allWindows));
-        } catch {
-          setWindows([]);
-        }
+        await showToast({
+          style: Toast.Style.Failure,
+          title: 'Failed to refresh windows',
+          message: error instanceof Error ? error.message : String(error),
+        });
       } finally {
         setIsLoading(false);
       }
@@ -159,13 +199,6 @@ export default function SwitchWindows() {
     loadWindows();
   }, [loadWindows]);
 
-  function getWindowIcon(window: WindowInfo): Image.ImageLike {
-    if (window.appPath) {
-      return { fileIcon: window.appPath };
-    }
-    return Icon.Window;
-  }
-
   return (
     <List
       isLoading={isLoading}
@@ -174,21 +207,19 @@ export default function SwitchWindows() {
       {windows.length === 0 && !isLoading ? (
         <List.EmptyView icon={Icon.Window} title="No open windows found" />
       ) : (
-        windows.map((window, index) => (
+        windows.map((window) => (
           <List.Item
-            key={`${window.bundleId}-${window.windowTitle}-${index}`}
-            icon={getWindowIcon(window)}
+            key={`${window.pid}-${window.windowId}`}
+            icon={window.appPath ? { fileIcon: window.appPath } : Icon.Window}
             title={window.windowTitle}
             accessories={[{ text: window.processName }]}
-            keywords={[window.processName, window.windowTitle]}
+            keywords={[window.processName]}
             actions={
               <ActionPanel>
                 <Action
                   title="Switch to Window"
                   icon={Icon.Window}
-                  onAction={async () => {
-                    await focusWindow(window);
-                  }}
+                  onAction={() => focusWindow(window)}
                 />
                 {window.isMinimized ? (
                   <Action
@@ -196,8 +227,11 @@ export default function SwitchWindows() {
                     icon={Icon.ArrowsExpand}
                     shortcut={{ modifiers: ['cmd'], key: 'm' }}
                     onAction={async () => {
-                      await windowAction('maximize', window, `Maximized "${window.windowTitle}"`);
-                      await refreshAfterAction();
+                      const succeeded = await runAction(
+                        ['maximize', String(window.pid), String(window.windowId)],
+                        `Maximized "${window.windowTitle}"`,
+                      );
+                      if (succeeded) await refreshAfterAction();
                     }}
                   />
                 ) : !window.isFullscreen ? (
@@ -206,8 +240,11 @@ export default function SwitchWindows() {
                     icon={Icon.Minus}
                     shortcut={{ modifiers: ['cmd'], key: 'm' }}
                     onAction={async () => {
-                      await windowAction('minimize', window, `Minimized "${window.windowTitle}"`);
-                      await refreshAfterAction(true);
+                      const succeeded = await runAction(
+                        ['minimize', String(window.pid), String(window.windowId)],
+                        `Minimized "${window.windowTitle}"`,
+                      );
+                      if (succeeded) await refreshAfterAction(true);
                     }}
                   />
                 ) : null}
@@ -216,20 +253,15 @@ export default function SwitchWindows() {
                   icon={window.isFullscreen ? Icon.ArrowsContract : Icon.ArrowsExpand}
                   shortcut={{ modifiers: ['cmd'], key: 'f' }}
                   onAction={async () => {
-                    if (window.isFullscreen) {
-                      await windowAction(
-                        'unfullscreen',
-                        window,
-                        `Exited full screen for "${window.windowTitle}"`,
-                      );
-                    } else {
-                      await windowAction(
-                        'fullscreen',
-                        window,
-                        `Made "${window.windowTitle}" full screen`,
-                      );
-                    }
-                    await refreshAfterAction(true);
+                    const command = window.isFullscreen ? 'unfullscreen' : 'fullscreen';
+                    const successMessage = window.isFullscreen
+                      ? `Exited full screen for "${window.windowTitle}"`
+                      : `Made "${window.windowTitle}" full screen`;
+                    const succeeded = await runAction(
+                      [command, String(window.pid), String(window.windowId)],
+                      successMessage,
+                    );
+                    if (succeeded) await refreshAfterAction(true);
                   }}
                 />
                 <Action
@@ -238,8 +270,11 @@ export default function SwitchWindows() {
                   style={Action.Style.Destructive}
                   shortcut={{ modifiers: ['cmd', 'shift'], key: 'w' }}
                   onAction={async () => {
-                    await windowAction('close', window, `Closed "${window.windowTitle}"`);
-                    await refreshAfterAction();
+                    const succeeded = await runAction(
+                      ['close', String(window.pid), String(window.windowId)],
+                      `Closed "${window.windowTitle}"`,
+                    );
+                    if (succeeded) await refreshAfterAction();
                   }}
                 />
                 <Action
@@ -247,23 +282,26 @@ export default function SwitchWindows() {
                   icon={window.isAppHidden ? Icon.Eye : Icon.EyeDisabled}
                   shortcut={{ modifiers: ['cmd'], key: 'h' }}
                   onAction={async () => {
-                    if (window.isAppHidden) {
-                      await appAction('show-app', window, `Showed "${window.processName}"`);
-                    } else {
-                      await appAction('hide-app', window, `Hid "${window.processName}"`);
-                    }
-                    await refreshAfterAction();
+                    const command = window.isAppHidden ? 'show-app' : 'hide-app';
+                    const successMessage = window.isAppHidden
+                      ? `Showed "${window.processName}"`
+                      : `Hid "${window.processName}"`;
+                    const succeeded = await runAction(
+                      [command, String(window.pid)],
+                      successMessage,
+                    );
+                    if (succeeded) await refreshAfterAction();
                   }}
                 />
                 <Action.CopyToClipboard
                   title="Copy Window Title"
                   content={window.windowTitle}
-                  shortcut={{ modifiers: ['cmd', 'shift'], key: 'c' }}
+                  shortcut={Keyboard.Shortcut.Common.Copy}
                 />
                 <Action
                   title="Refresh Window List"
                   icon={Icon.ArrowClockwise}
-                  shortcut={{ modifiers: ['cmd'], key: 'r' }}
+                  shortcut={Keyboard.Shortcut.Common.Refresh}
                   onAction={loadWindows}
                 />
               </ActionPanel>

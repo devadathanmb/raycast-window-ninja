@@ -16,29 +16,57 @@ func _AXUIElementGetWindow(_ element: AXUIElement, _ windowID: UnsafeMutablePoin
 
 // Session connection ID, required by other private Space APIs.
 @_silgen_name("CGSMainConnectionID")
-func CGSMainConnectionID() -> Int
+func cgsMainConnectionID() -> Int
 
 // Returns which Space(s) a window belongs to. Windows without a Space are browser
 // tabs (they get a CGWindowID but no Space assignment).
 @_silgen_name("CGSCopySpacesForWindows")
-func CGSCopySpacesForWindows(_ cid: Int, _ selector: Int, _ windowIDs: CFArray) -> CFArray?
+func cgsCopySpacesForWindows(_ cid: Int, _ selector: Int, _ windowIDs: CFArray) -> CFArray?
 
-typealias AXUIElementID = UInt
+typealias AXUIElementID = UInt64
 
 struct WindowInfo: Codable {
     let processName: String
     let windowTitle: String
-    let bundleId: String
     let appPath: String
     let pid: Int32
-    let windowIndex: Int
+    let windowId: CGWindowID
     let isMinimized: Bool
     let isFullscreen: Bool
     let isAppHidden: Bool
 }
 
-// AX attribute reads all follow the same pattern: pass an attribute name string
-// and a pointer, get back a value. These helpers wrap that.
+struct ResolvedWindow {
+    let element: AXUIElement
+    let title: String
+    let windowId: CGWindowID
+}
+
+struct ActionResponse: Codable {
+    let success: Bool
+    let error: String?
+
+    static func succeeded() -> ActionResponse {
+        ActionResponse(success: true, error: nil)
+    }
+
+    static func failed(_ error: String) -> ActionResponse {
+        ActionResponse(success: false, error: error)
+    }
+}
+
+func printJSON<T: Encodable>(_ value: T) {
+    do {
+        let data = try JSONEncoder().encode(value)
+        guard let json = String(data: data, encoding: .utf8) else {
+            throw CocoaError(.fileWriteInapplicableStringEncoding)
+        }
+        print(json)
+    } catch {
+        fputs("Failed to encode helper response: \(error)\n", stderr)
+        exit(1)
+    }
+}
 
 func boolAttribute(_ element: AXUIElement, _ attribute: CFString) -> Bool? {
     var value: AnyObject?
@@ -72,7 +100,7 @@ func getWindowID(of element: AXUIElement) -> CGWindowID? {
     return err == .success && windowID != 0 ? windowID : nil
 }
 
-// Standard AX API — only returns windows on the current Space.
+// In practice, this can omit windows on inactive Spaces.
 func axWindows(for pid: pid_t) -> [AXUIElement] {
     let appElement = AXUIElementCreateApplication(pid)
     var windowsValue: AnyObject?
@@ -84,28 +112,15 @@ func axWindows(for pid: pid_t) -> [AXUIElement] {
     return []
 }
 
-// Brute-force discovery for windows on OTHER Spaces (fullscreen apps, etc.).
-//
-// The standard AX API only returns windows on the current Space. To find windows on
-// other Spaces, we use a private API that accepts a "remote token" to create AX elements.
-//
-// Since there's no "give me all windows" function, we have to guess element IDs one by one.
-// The private API can only fetch ONE element at a time by its ID:
-//   _AXUIElementCreateWithRemoteToken(token) → returns element or nil
-//
-// We construct a 20-byte "remote token" for each guess:
-//   bytes 0-3:   PID (which app to search in)
-//   bytes 4-7:   reserved (zero)
-//   bytes 8-11:  0x636f636f ("coco" — marks it as a Cocoa app)
-//   bytes 12-19: element ID (the part we loop through: 0, 1, 2, 3...)
-//
-// We try IDs 0–499 with a 50ms timeout per app and keep standard windows/dialogs.
+// kAXWindows can omit inactive-Space windows. The private token API has no
+// enumeration entry point, so other-Space acquisition scans observed element IDs.
+// The 500-ID, 50-miss, and 50ms bounds keep one uncooperative app from dominating a list call.
 func windowsByBruteForce(for pid: pid_t) -> [AXUIElement] {
-    // Build the base token with PID and "coco" marker
+    // AltTab's reverse-engineered token: pid, zero, numeric marker, then element ID.
     var remoteToken = Data(count: 20)
-    remoteToken.replaceSubrange(0..<4, with: withUnsafeBytes(of: pid) { Data($0) })  // PID
-    remoteToken.replaceSubrange(4..<8, with: withUnsafeBytes(of: Int32(0)) { Data($0) })  // Reserved
-    remoteToken.replaceSubrange(8..<12, with: withUnsafeBytes(of: Int32(0x636f_636f)) { Data($0) })  // "coco"
+    remoteToken.replaceSubrange(0..<4, with: withUnsafeBytes(of: pid) { Data($0) })
+    remoteToken.replaceSubrange(4..<8, with: withUnsafeBytes(of: Int32(0)) { Data($0) })
+    remoteToken.replaceSubrange(8..<12, with: withUnsafeBytes(of: Int32(0x636f_636f)) { Data($0) })
 
     var results: [AXUIElement] = []
     let startTime = CFAbsoluteTimeGetCurrent()
@@ -114,30 +129,25 @@ func windowsByBruteForce(for pid: pid_t) -> [AXUIElement] {
     // Try element IDs 0, 1, 2, 3... until we hit 500, spend 50ms, or
     // see 50 consecutive misses (IDs cluster in low numbers, so gaps mean we're done).
     for elementId: AXUIElementID in 0..<500 {
-        if consecutiveMisses > 50 { break }  // No more elements likely exist
-        if CFAbsoluteTimeGetCurrent() - startTime > 0.05 { break }  // Don't spend more than 50ms per app
+        if consecutiveMisses >= 50 { break }
+        if CFAbsoluteTimeGetCurrent() - startTime > 0.05 { break }
 
-        // Update the token with this element ID
         remoteToken.replaceSubrange(12..<20, with: withUnsafeBytes(of: elementId) { Data($0) })
 
-        // Try to create an element with this ID
-        // If this ID doesn't exist, the API returns nil and we skip to the next iteration
         guard
             let axElement = _AXUIElementCreateWithRemoteToken(remoteToken as CFData)?
                 .takeRetainedValue()
         else {
             consecutiveMisses += 1
-            continue  // This element ID doesn't exist, try next number
+            continue
         }
         consecutiveMisses = 0
 
-        // Check if this element is a window (not a button, menu, tab, etc.)
         var subroleValue: AnyObject?
         let err = AXUIElementCopyAttributeValue(
             axElement, kAXSubroleAttribute as CFString, &subroleValue)
         guard err == .success, let subrole = subroleValue as? String else { continue }
 
-        // Only keep actual windows and dialogs, skip everything else
         if subrole == kAXStandardWindowSubrole as String || subrole == kAXDialogSubrole as String {
             results.append(axElement)
         }
@@ -154,7 +164,7 @@ func cgWindowScan() -> (
     realWIDs: Set<CGWindowID>, pidsWithWindows: Set<pid_t>,
     realWindowCountByPid: [pid_t: Int]
 ) {
-    let conn = CGSMainConnectionID()
+    let conn = cgsMainConnectionID()
     var realWIDs = Set<CGWindowID>()
     var pidsWithWindows = Set<pid_t>()
     var realWindowCountByPid: [pid_t: Int] = [:]
@@ -181,7 +191,7 @@ func cgWindowScan() -> (
         // Real windows belong to a Space. Browser tabs get a CGWindowID but NO Space assignment.
         // This is how we tell them apart.
         let widArray = [wid] as CFArray
-        if let spaces = CGSCopySpacesForWindows(conn, 0x7, widArray) as? [UInt64],
+        if let spaces = cgsCopySpacesForWindows(conn, 0x7, widArray) as? [UInt64],
             !spaces.isEmpty
         {
             realWIDs.insert(wid)  // This window has a Space → it's real, not a tab
@@ -194,112 +204,77 @@ func cgWindowScan() -> (
     return (realWIDs, pidsWithWindows, realWindowCountByPid)
 }
 
-// Merges standard + brute-force results, deduplicating by CGWindowID.
-// Returns (AXUIElement, title) tuples so callers don't need to re-read titles.
-//
-// Strategy:
-// 1. Use standard API (fast) to get windows on current Space
-// 2. If standard already found all windows (matching expectedCount), skip brute-force
-// 3. Otherwise use brute-force (slow) to find windows on other Spaces
-// 4. Deduplicate: if a window appears in both, keep the standard version
-// 5. Filter: only keep brute-force windows that have a Space assignment (removes tabs)
+// Merges standard and brute-force results, deduplicating by stable CGWindowID.
 func allWindows(for pid: pid_t, realWIDs: Set<CGWindowID>, expectedCount: Int)
-    -> [(element: AXUIElement, title: String)]
+    -> [ResolvedWindow]
 {
-    let standard = axWindows(for: pid)  // Fast: windows on current Space
-
+    let standard = axWindows(for: pid)
     var seenWindowIDs = Set<CGWindowID>()
-    var combined: [(element: AXUIElement, title: String)] = []
+    var combined: [ResolvedWindow] = []
 
-    // First pass: add all standard windows (trusted, fast API)
-    for win in standard {
-        let title = getTitle(of: win)
-        guard !title.isEmpty else { continue }
-        if let wid = getWindowID(of: win) {
-            seenWindowIDs.insert(wid)  // Remember this window ID to avoid duplicates
-        }
-        combined.append((element: win, title: title))
+    for window in standard {
+        let title = getTitle(of: window)
+        guard !title.isEmpty, let windowId = getWindowID(of: window) else { continue }
+        guard seenWindowIDs.insert(windowId).inserted else { continue }
+        combined.append(ResolvedWindow(element: window, title: title, windowId: windowId))
     }
 
-    // Skip brute-force if standard API already found all windows for this app.
-    // This means the app has no windows on other Spaces.
-    if combined.count >= expectedCount {
+    if seenWindowIDs.count >= expectedCount {
         return combined
     }
 
-    // Brute-force: find windows on other Spaces
-    let bruteForce = windowsByBruteForce(for: pid)
-
-    // Second pass: add brute-force windows NOT already seen
-    for win in bruteForce {
-        let title = getTitle(of: win)
-        guard !title.isEmpty else { continue }
-
-        guard let wid = getWindowID(of: win) else { continue }
-        if seenWindowIDs.contains(wid) { continue }  // Already got this from standard API
-        guard realWIDs.contains(wid) else { continue }  // Must have a Space (filters out tabs)
-        seenWindowIDs.insert(wid)
-        combined.append((element: win, title: title))
+    for window in windowsByBruteForce(for: pid) {
+        let title = getTitle(of: window)
+        guard !title.isEmpty, let windowId = getWindowID(of: window) else { continue }
+        guard !seenWindowIDs.contains(windowId), realWIDs.contains(windowId) else { continue }
+        seenWindowIDs.insert(windowId)
+        combined.append(ResolvedWindow(element: window, title: title, windowId: windowId))
     }
 
     return combined
 }
 
-func listWindows() {
-    let skipBundleIds = Set(["com.raycast.macos"])
+func listWindows() -> [WindowInfo] {
     let (realWIDs, pidsWithWindows, realWindowCountByPid) = cgWindowScan()
 
     struct AppEntry {
         let name: String
-        let bundleId: String
         let path: String
         let pid: pid_t
+        let isHidden: Bool
     }
 
-    // Only process apps that own at least one window (skips background agents
-    // with .regular activation policy but no visible windows).
-    var apps: [AppEntry] = []
-    for app in NSWorkspace.shared.runningApplications {
-        guard app.activationPolicy == .regular else { continue }
-        let bundleId = app.bundleIdentifier ?? ""
-        guard !skipBundleIds.contains(bundleId) else { continue }
+    let apps = NSWorkspace.shared.runningApplications.compactMap { app -> AppEntry? in
+        guard app.activationPolicy == .regular else { return nil }
+        guard app.bundleIdentifier != "com.raycast.macos" else { return nil }
         let pid = app.processIdentifier
-        guard pidsWithWindows.contains(pid) else { continue }
-
-        apps.append(
-            AppEntry(
-                name: app.localizedName ?? "",
-                bundleId: bundleId,
-                path: app.bundleURL?.path ?? "",
-                pid: pid
-            ))
+        guard pidsWithWindows.contains(pid) else { return nil }
+        return AppEntry(
+            name: app.localizedName ?? "",
+            path: app.bundleURL?.path ?? "",
+            pid: pid,
+            isHidden: app.isHidden
+        )
     }
 
-    // Enumerate each app's windows in parallel (GCD) for speed.
-    // Since we're modifying a shared array from multiple threads, we need a lock.
     let lock = NSLock()
     var allResults: [WindowInfo] = []
 
-    DispatchQueue.concurrentPerform(iterations: apps.count) { i in
-        let app = apps[i]
+    DispatchQueue.concurrentPerform(iterations: apps.count) { index in
+        let app = apps[index]
         let expectedCount = realWindowCountByPid[app.pid] ?? 0
         let windows = allWindows(for: app.pid, realWIDs: realWIDs, expectedCount: expectedCount)
-        var localResults: [WindowInfo] = []
-
-        // Titles are already resolved — no need to call getTitle again
-        for (index, entry) in windows.enumerated() {
-            localResults.append(
-                WindowInfo(
-                    processName: app.name,
-                    windowTitle: entry.title,
-                    bundleId: app.bundleId,
-                    appPath: app.path,
-                    pid: app.pid,
-                    windowIndex: index,
-                    isMinimized: isMinimized(entry.element),
-                    isFullscreen: isFullscreen(entry.element),
-                    isAppHidden: NSRunningApplication(processIdentifier: app.pid)?.isHidden ?? false
-                ))
+        let localResults = windows.map { window in
+            WindowInfo(
+                processName: app.name,
+                windowTitle: window.title,
+                appPath: app.path,
+                pid: app.pid,
+                windowId: window.windowId,
+                isMinimized: isMinimized(window.element),
+                isFullscreen: isFullscreen(window.element),
+                isAppHidden: app.isHidden
+            )
         }
 
         lock.lock()
@@ -307,323 +282,250 @@ func listWindows() {
         lock.unlock()
     }
 
-    let encoder = JSONEncoder()
-    if let data = try? encoder.encode(allResults) {
-        print(String(data: data, encoding: .utf8)!)
+    allResults.sort {
+        let processOrder = $0.processName.localizedCaseInsensitiveCompare($1.processName)
+        if processOrder != .orderedSame {
+            return processOrder == .orderedAscending
+        }
+
+        let titleOrder = $0.windowTitle.localizedCaseInsensitiveCompare($1.windowTitle)
+        if titleOrder != .orderedSame {
+            return titleOrder == .orderedAscending
+        }
+
+        return $0.windowId < $1.windowId
     }
+    return allResults
 }
 
-// Resolves a window by PID and index, returning the AX element and all windows for the app.
-// This eliminates the repeated cgWindowScan → allWindows → bounds-check boilerplate.
-func resolveWindow(pid: pid_t, windowIndex: Int) -> (
-    element: AXUIElement, windows: [(element: AXUIElement, title: String)]
-)? {
+func resolveWindow(pid: pid_t, windowId: CGWindowID) -> ResolvedWindow? {
     let (realWIDs, _, realWindowCountByPid) = cgWindowScan()
     let expectedCount = realWindowCountByPid[pid] ?? 0
-    let windows = allWindows(for: pid, realWIDs: realWIDs, expectedCount: expectedCount)
-    guard windowIndex < windows.count else {
-        print("{\"success\":false,\"error\":\"Window not found\"}")
-        return nil
-    }
-    return (element: windows[windowIndex].element, windows: windows)
+    return allWindows(for: pid, realWIDs: realWIDs, expectedCount: expectedCount)
+        .first { $0.windowId == windowId }
 }
 
-func focusWindow(pid: pid_t, windowIndex: Int) {
-    if let app = NSRunningApplication(processIdentifier: pid) {
-        app.activate()
+func focusWindow(pid: pid_t, windowId: CGWindowID) -> ActionResponse {
+    guard let window = resolveWindow(pid: pid, windowId: windowId) else {
+        return .failed("Window not found")
+    }
+    guard let app = NSRunningApplication(processIdentifier: pid) else {
+        return .failed("Application not found")
     }
 
-    if let resolved = resolveWindow(pid: pid, windowIndex: windowIndex) {
-        AXUIElementPerformAction(resolved.element, kAXRaiseAction as CFString)
-    }
-
-    print("{\"success\":true}")
+    _ = app.activate()
+    let error = AXUIElementPerformAction(window.element, kAXRaiseAction as CFString)
+    return error == .success ? .succeeded() : .failed("Failed to focus window")
 }
 
-// Lightweight check: does a window with this CGWindowID still exist?
-// Uses only CGWindowListCopyWindowInfo (no AX calls, no brute-force).
-func windowExists(_ targetWindowID: CGWindowID) -> Bool {
-    guard
-        let windowInfoList = CGWindowListCopyWindowInfo(
-            [.optionAll, .excludeDesktopElements],
-            kCGNullWindowID
-        ) as? [[String: Any]]
-    else { return false }
-
-    return windowInfoList.contains { info in
-        guard let wid = info[kCGWindowNumber as String] as? CGWindowID,
-            let layer = info[kCGWindowLayer as String] as? Int,
-            layer == 0
-        else { return false }
-        return wid == targetWindowID
+func closeWindow(pid: pid_t, windowId: CGWindowID) -> ActionResponse {
+    guard let resolved = resolveWindow(pid: pid, windowId: windowId) else {
+        return .failed("Window not found")
     }
-}
-
-func closeWindow(pid: pid_t, windowIndex: Int) {
-    guard let resolved = resolveWindow(pid: pid, windowIndex: windowIndex) else { return }
-
-    let window = resolved.element
-    let windows = resolved.windows
-    let app = NSRunningApplication(processIdentifier: pid)
-    let wasFullscreen = isFullscreen(window)
-
-    // Strategy 1: AX close button — the universal method used by AltTab, AeroSpace, etc.
-    // For fullscreen windows the close button is unreliable (some apps accept but ignore it),
-    // so we skip straight to AppleScript which handles fullscreen properly.
-    if !wasFullscreen {
-        var closeButtonValue: AnyObject?
-        let err = AXUIElementCopyAttributeValue(
-            window, kAXCloseButtonAttribute as CFString, &closeButtonValue)
-        if err == .success, let closeButton = closeButtonValue {
-            let pressErr = AXUIElementPerformAction(
-                closeButton as! AXUIElement, kAXPressAction as CFString)
-            if pressErr == .success {
-                if windows.count == 1, let app = app {
-                    app.terminate()
-                }
-                print("{\"success\":true,\"method\":\"closeButton\"}")
-                return
-            }
-        }
-    }
-
-    // Strategy 2: AppleScript — handles fullscreen windows and apps where AX close button fails.
-    if let app = app, let bundleId = app.bundleIdentifier {
-        let title = windows[windowIndex].title
-        let escapedTitle = title.replacingOccurrences(of: "\\", with: "\\\\")
-            .replacingOccurrences(of: "\"", with: "\\\"")
-        let scriptSource =
-            "tell application id \"\(bundleId)\" to close (first window whose name is \"\(escapedTitle)\")"
-        if let appleScript = NSAppleScript(source: scriptSource) {
-            var scriptError: NSDictionary?
-            appleScript.executeAndReturnError(&scriptError)
-            if scriptError == nil {
-                if windows.count == 1 {
-                    app.terminate()
-                }
-                print("{\"success\":true,\"method\":\"applescript\"}")
-                return
-            }
-        }
-    }
-
-    // Strategy 3: If it's the only window, terminate the app
-    if windows.count == 1, let app = app {
-        app.terminate()
-        print("{\"success\":true,\"method\":\"terminate\"}")
-        return
-    }
-
-    print("{\"success\":false,\"error\":\"All close methods failed\"}")
-}
-
-func minimizeWindow(pid: pid_t, windowIndex: Int) {
-    guard let resolved = resolveWindow(pid: pid, windowIndex: windowIndex) else { return }
 
     var window = resolved.element
+    if isFullscreen(window) {
+        let fullscreenError = AXUIElementSetAttributeValue(
+            window, "AXFullScreen" as CFString, kCFBooleanFalse)
+        guard fullscreenError == .success else {
+            return .failed("Failed to exit full screen before closing window")
+        }
 
-    // Track by CGWindowID so retry loop finds the correct window even if indices shift
-    // after a fullscreen transition.
-    let targetWindowID = getWindowID(of: window)
+        usleep(1_000_000)
+        guard let refreshed = resolveWindow(pid: pid, windowId: windowId) else {
+            return .failed("Window not found after exiting full screen")
+        }
+        window = refreshed.element
+    }
 
-    // Fullscreen windows often reject direct minimization. Exit fullscreen first,
-    // wait for the transition, then minimize.
+    var closeButtonValue: AnyObject?
+    let copyError = AXUIElementCopyAttributeValue(
+        window, kAXCloseButtonAttribute as CFString, &closeButtonValue)
+    guard copyError == .success,
+        let closeButtonValue,
+        CFGetTypeID(closeButtonValue) == AXUIElementGetTypeID()
+    else {
+        return .failed("Window does not expose a close button")
+    }
+    let closeButton = closeButtonValue as! AXUIElement
+
+    let pressError = AXUIElementPerformAction(closeButton, kAXPressAction as CFString)
+    return pressError == .success
+        ? .succeeded()
+        : .failed("Failed to close window")
+}
+
+func minimizeWindow(pid: pid_t, windowId: CGWindowID) -> ActionResponse {
+    guard let resolved = resolveWindow(pid: pid, windowId: windowId) else {
+        return .failed("Window not found")
+    }
+
+    var window = resolved.element
     if isFullscreen(window) {
         _ = AXUIElementSetAttributeValue(window, "AXFullScreen" as CFString, kCFBooleanFalse)
-        usleep(250000)  // 250ms for Space/fullscreen transition start
+        usleep(250_000)
     }
 
-    // Retry for up to ~2s. Exiting fullscreen is asynchronous and can briefly reject minimize.
     for _ in 0..<10 {
-        let err = AXUIElementSetAttributeValue(
+        let error = AXUIElementSetAttributeValue(
             window, kAXMinimizedAttribute as CFString, kCFBooleanTrue)
-        if err == .success || boolAttribute(window, kAXMinimizedAttribute as CFString) == true {
-            print("{\"success\":true}")
-            return
+        if error == .success || boolAttribute(window, kAXMinimizedAttribute as CFString) == true {
+            return .succeeded()
         }
 
-        usleep(200000)
-
-        // Refresh the target element in case the fullscreen transition replaced the AX element.
-        // Match by CGWindowID (not index) to avoid targeting the wrong window.
-        if let targetWID = targetWindowID,
-            let refreshed = resolveWindow(pid: pid, windowIndex: 0)
-        {
-            if let match = refreshed.windows.first(where: {
-                getWindowID(of: $0.element) == targetWID
-            }) {
-                window = match.element
-            }
+        usleep(200_000)
+        if let refreshed = resolveWindow(pid: pid, windowId: windowId) {
+            window = refreshed.element
         }
     }
 
-    print("{\"success\":false,\"error\":\"Failed to minimize window\"}")
+    return .failed("Failed to minimize window")
 }
 
-func maximizeWindow(pid: pid_t, windowIndex: Int) {
-    guard let resolved = resolveWindow(pid: pid, windowIndex: windowIndex) else { return }
+func maximizeWindow(pid: pid_t, windowId: CGWindowID) -> ActionResponse {
+    guard let window = resolveWindow(pid: pid, windowId: windowId) else {
+        return .failed("Window not found")
+    }
 
-    let err = AXUIElementSetAttributeValue(
-        resolved.element, kAXMinimizedAttribute as CFString, kCFBooleanFalse)
-    if err == .success
-        || boolAttribute(resolved.element, kAXMinimizedAttribute as CFString) == false
+    let error = AXUIElementSetAttributeValue(
+        window.element, kAXMinimizedAttribute as CFString, kCFBooleanFalse)
+    if error == .success
+        || boolAttribute(window.element, kAXMinimizedAttribute as CFString) == false
     {
-        _ = AXUIElementPerformAction(resolved.element, kAXRaiseAction as CFString)
-        print("{\"success\":true}")
-    } else {
-        print("{\"success\":false,\"error\":\"Failed to maximize window\"}")
+        _ = AXUIElementPerformAction(window.element, kAXRaiseAction as CFString)
+        return .succeeded()
     }
+    return .failed("Failed to maximize window")
 }
 
-func makeWindowFullscreen(pid: pid_t, windowIndex: Int) {
-    guard let resolved = resolveWindow(pid: pid, windowIndex: windowIndex) else { return }
-
-    let err = AXUIElementSetAttributeValue(
-        resolved.element, "AXFullScreen" as CFString, kCFBooleanTrue)
-    if err == .success {
-        print("{\"success\":true}")
-    } else {
-        print("{\"success\":false,\"error\":\"Failed to make window full screen\"}")
+func makeWindowFullscreen(pid: pid_t, windowId: CGWindowID) -> ActionResponse {
+    guard let window = resolveWindow(pid: pid, windowId: windowId) else {
+        return .failed("Window not found")
     }
+
+    let error = AXUIElementSetAttributeValue(
+        window.element, "AXFullScreen" as CFString, kCFBooleanTrue)
+    return error == .success
+        ? .succeeded()
+        : .failed("Failed to make window full screen")
 }
 
-func exitWindowFullscreen(pid: pid_t, windowIndex: Int) {
-    guard let resolved = resolveWindow(pid: pid, windowIndex: windowIndex) else { return }
-
-    let err = AXUIElementSetAttributeValue(
-        resolved.element, "AXFullScreen" as CFString, kCFBooleanFalse)
-    if err == .success {
-        print("{\"success\":true}")
-    } else {
-        print("{\"success\":false,\"error\":\"Failed to exit full screen\"}")
+func exitWindowFullscreen(pid: pid_t, windowId: CGWindowID) -> ActionResponse {
+    guard let window = resolveWindow(pid: pid, windowId: windowId) else {
+        return .failed("Window not found")
     }
+
+    let error = AXUIElementSetAttributeValue(
+        window.element, "AXFullScreen" as CFString, kCFBooleanFalse)
+    return error == .success
+        ? .succeeded()
+        : .failed("Failed to exit full screen")
 }
 
-func hideApplication(pid: pid_t) {
+func hideApplication(pid: pid_t) -> ActionResponse {
     guard let app = NSRunningApplication(processIdentifier: pid) else {
-        print("{\"success\":false,\"error\":\"Application not found\"}")
-        return
+        return .failed("Application not found")
     }
-
-    if app.hide() {
-        print("{\"success\":true}")
-    } else {
-        print("{\"success\":false,\"error\":\"Failed to hide application\"}")
-    }
+    return app.hide() ? .succeeded() : .failed("Failed to hide application")
 }
 
-func showApplication(pid: pid_t) {
+func showApplication(pid: pid_t) -> ActionResponse {
     guard let app = NSRunningApplication(processIdentifier: pid) else {
-        print("{\"success\":false,\"error\":\"Application not found\"}")
-        return
+        return .failed("Application not found")
     }
 
-    // Either unhide or activate succeeding is enough — unhide() returns false
-    // if the app wasn't actually hidden, but activate() can still bring it forward.
     let unhidden = app.unhide()
     let activated = app.activate()
-    if unhidden || activated {
-        print("{\"success\":true}")
-    } else {
-        print("{\"success\":false,\"error\":\"Failed to show application\"}")
-    }
+    return unhidden || activated ? .succeeded() : .failed("Failed to show application")
 }
-
-// Usage: win-ninja list                         → JSON array of all windows
-//        win-ninja focus <pid> <index>          → activate that window
-//        win-ninja close <pid> <index>          → close that window
-//        win-ninja minimize <pid> <index>       → minimize that window
-//        win-ninja maximize <pid> <index>       → unminimize that window
-//        win-ninja fullscreen <pid> <index>     → make that window full screen
-//        win-ninja unfullscreen <pid> <index>   → exit full screen for that window
-//        win-ninja hide-app <pid>               → hide that application
-//        win-ninja show-app <pid>               → unhide that application
 
 func printHelp() {
     let help = """
         Usage: win-ninja <command> [arguments]
 
         Commands:
-          list                        Output JSON array of all open windows
-          focus <pid> <index>         Activate and raise a window
-          close <pid> <index>         Close a window
-          minimize <pid> <index>      Minimize a window
-          maximize <pid> <index>      Unminimize a window
-          fullscreen <pid> <index>    Make a window full screen
-          unfullscreen <pid> <index>  Exit full screen for a window
-          hide-app <pid>              Hide an application
-          show-app <pid>              Unhide an application
+          list                            Output JSON for all open windows
+          focus <pid> <window-id>         Activate and raise a window
+          close <pid> <window-id>         Close a window
+          minimize <pid> <window-id>      Minimize a window
+          maximize <pid> <window-id>      Unminimize a window
+          fullscreen <pid> <window-id>    Make a window full screen
+          unfullscreen <pid> <window-id>  Exit full screen for a window
+          hide-app <pid>                  Hide an application
+          show-app <pid>                  Unhide an application
         """
     print(help)
 }
 
-// Parse <pid> <windowIndex> from CLI args, or exit with usage message.
-func parsePidAndIndex(command: String) -> (pid: pid_t, windowIndex: Int) {
-    let args = CommandLine.arguments
-    guard args.count >= 4,
-        let pid = Int32(args[2]),
-        let idx = Int(args[3])
+func parsePidAndWindowId(command: String) -> (pid: pid_t, windowId: CGWindowID) {
+    let arguments = CommandLine.arguments
+    guard arguments.count >= 4,
+        let pid = Int32(arguments[2]),
+        pid > 0,
+        let windowId = UInt32(arguments[3]),
+        windowId != kCGNullWindowID
     else {
-        fputs("Usage: win-ninja \(command) <pid> <windowIndex>\n", stderr)
-        exit(1)
+        printJSON(ActionResponse.failed("Usage: win-ninja \(command) <pid> <window-id>"))
+        exit(2)
     }
-    return (pid, idx)
+    return (pid, windowId)
 }
 
-// Parse <pid> from CLI args, or exit with usage message.
 func parsePid(command: String) -> pid_t {
-    let args = CommandLine.arguments
-    guard args.count >= 3,
-        let pid = Int32(args[2])
+    let arguments = CommandLine.arguments
+    guard arguments.count >= 3,
+        let pid = Int32(arguments[2]),
+        pid > 0
     else {
-        fputs("Usage: win-ninja \(command) <pid>\n", stderr)
-        exit(1)
+        printJSON(ActionResponse.failed("Usage: win-ninja \(command) <pid>"))
+        exit(2)
     }
     return pid
 }
 
-let args = CommandLine.arguments
+_ = AXUIElementSetMessagingTimeout(AXUIElementCreateSystemWide(), 1.0)
 
-if args.count < 2 {
+let arguments = CommandLine.arguments
+guard arguments.count >= 2 else {
     printHelp()
-} else {
-    switch args[1] {
-    case "list":
-        listWindows()
+    exit(0)
+}
 
-    case "focus":
-        let (pid, idx) = parsePidAndIndex(command: "focus")
-        focusWindow(pid: pid, windowIndex: idx)
+switch arguments[1] {
+case "list":
+    printJSON(listWindows())
 
-    case "close":
-        let (pid, idx) = parsePidAndIndex(command: "close")
-        closeWindow(pid: pid, windowIndex: idx)
+case "focus":
+    let target = parsePidAndWindowId(command: "focus")
+    printJSON(focusWindow(pid: target.pid, windowId: target.windowId))
 
-    case "minimize":
-        let (pid, idx) = parsePidAndIndex(command: "minimize")
-        minimizeWindow(pid: pid, windowIndex: idx)
+case "close":
+    let target = parsePidAndWindowId(command: "close")
+    printJSON(closeWindow(pid: target.pid, windowId: target.windowId))
 
-    case "maximize":
-        let (pid, idx) = parsePidAndIndex(command: "maximize")
-        maximizeWindow(pid: pid, windowIndex: idx)
+case "minimize":
+    let target = parsePidAndWindowId(command: "minimize")
+    printJSON(minimizeWindow(pid: target.pid, windowId: target.windowId))
 
-    case "fullscreen":
-        let (pid, idx) = parsePidAndIndex(command: "fullscreen")
-        makeWindowFullscreen(pid: pid, windowIndex: idx)
+case "maximize":
+    let target = parsePidAndWindowId(command: "maximize")
+    printJSON(maximizeWindow(pid: target.pid, windowId: target.windowId))
 
-    case "unfullscreen":
-        let (pid, idx) = parsePidAndIndex(command: "unfullscreen")
-        exitWindowFullscreen(pid: pid, windowIndex: idx)
+case "fullscreen":
+    let target = parsePidAndWindowId(command: "fullscreen")
+    printJSON(makeWindowFullscreen(pid: target.pid, windowId: target.windowId))
 
-    case "hide-app":
-        let pid = parsePid(command: "hide-app")
-        hideApplication(pid: pid)
+case "unfullscreen":
+    let target = parsePidAndWindowId(command: "unfullscreen")
+    printJSON(exitWindowFullscreen(pid: target.pid, windowId: target.windowId))
 
-    case "show-app":
-        let pid = parsePid(command: "show-app")
-        showApplication(pid: pid)
+case "hide-app":
+    printJSON(hideApplication(pid: parsePid(command: "hide-app")))
 
-    default:
-        printHelp()
-    }
+case "show-app":
+    printJSON(showApplication(pid: parsePid(command: "show-app")))
+
+default:
+    printHelp()
+    exit(2)
 }
