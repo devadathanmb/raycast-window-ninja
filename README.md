@@ -60,6 +60,8 @@ The extension will now be available in Raycast.
 
 Open Raycast, type `Window Ninja`, search by window title or app name, and press Enter to switch.
 
+The extension preferences control whether the list includes minimized windows and windows belonging to hidden applications. Disable **Show Applications Without Visible Windows** to omit applications hidden with macOS's Hide Application action.
+
 ## Performance
 
 This extension is blazingly fast. Below is the benchmark of the binary, done using [hyperfine](https://github.com/sharkdp/hyperfine):

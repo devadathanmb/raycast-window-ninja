@@ -24,6 +24,8 @@ Window commands use `<command> <pid> <window-id>`. Application commands use `<co
 - Focus closes Raycast only after the helper reports success.
 - Management actions use Toasts because the List remains visible and refreshes.
 - Transition polling uses 120, 350, and 700 ms action-relative deadlines and compares normalized window state.
+- The `Show Applications Without Visible Windows` preference controls whether windows belonging to hidden applications are listed and defaults to preserving them.
+- Hidden-application filtering and minimized-window filtering are independent preferences.
 - Helper stdout contains one JSON value. Diagnostics go to stderr.
 - PID and WID input must be positive and nonzero.
 

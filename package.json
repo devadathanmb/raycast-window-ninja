@@ -27,6 +27,15 @@
       "default": false,
       "label": "Show Minimized Windows",
       "required": false
+    },
+    {
+      "name": "showApplicationsWithoutVisibleWindows",
+      "title": "Show Applications Without Visible Windows",
+      "description": "Show windows belonging to applications hidden with macOS's Hide Application action",
+      "type": "checkbox",
+      "default": true,
+      "label": "Show Applications Without Visible Windows",
+      "required": false
     }
   ],
   "dependencies": {

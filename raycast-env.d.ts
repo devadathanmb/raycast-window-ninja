@@ -9,7 +9,9 @@
 
 type ExtensionPreferences = {
   /** Show Minimized Windows - Show minimized (hidden) windows in the list */
-  "showMinimizedWindows": boolean
+  "showMinimizedWindows": boolean,
+  /** Show Applications Without Visible Windows - Show windows belonging to applications hidden with macOS's Hide Application action */
+  "showApplicationsWithoutVisibleWindows": boolean
 }
 
 /** Preferences accessible in all the extension's commands */

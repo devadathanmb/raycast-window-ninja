@@ -78,7 +78,7 @@ flowchart TB
     subgraph Raycast["Raycast Extension<br/>src/window-ninja.tsx"]
         R1[Calls Swift binary via execFile]
         R2[Parses JSON list of windows]
-        R3[Shows searchable List UI]
+        R3[Applies preferences and shows searchable List UI]
         R4[Handles click → calls focus/close/minimize/etc.]
     end
 
@@ -115,6 +115,8 @@ flowchart TB
 - `unfullscreen <pid> <window-id>` → Exit full screen for that window
 - `hide-app <pid>` → Hide that application
 - `show-app <pid>` → Unhide that application
+
+The Raycast layer independently filters minimized windows and windows owned by hidden applications according to extension preferences. The helper always returns both states so preference changes do not alter its protocol.
 
 ---
 

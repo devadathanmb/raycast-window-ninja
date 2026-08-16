@@ -132,12 +132,17 @@ export default function SwitchWindows() {
   const [windows, setWindows] = useState<WindowInfo[]>([]);
   const [isLoading, setIsLoading] = useState(true);
 
-  const { showMinimizedWindows } = getPreferenceValues<Preferences>();
+  const { showMinimizedWindows, showApplicationsWithoutVisibleWindows } =
+    getPreferenceValues<Preferences>();
 
   const filterWindows = useCallback(
     (allWindows: WindowInfo[]) =>
-      showMinimizedWindows ? allWindows : allWindows.filter((w) => !w.isMinimized),
-    [showMinimizedWindows],
+      allWindows.filter(
+        (window) =>
+          (showMinimizedWindows || !window.isMinimized) &&
+          (showApplicationsWithoutVisibleWindows || !window.isAppHidden),
+      ),
+    [showApplicationsWithoutVisibleWindows, showMinimizedWindows],
   );
 
   const loadWindows = useCallback(async () => {
