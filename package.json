@@ -50,6 +50,9 @@
     "prettier": "^3.9.6",
     "typescript": "^5.9.3"
   },
+  "overrides": {
+    "esbuild": "0.28.1"
+  },
   "scripts": {
     "build:swift": "cd win-ninja && swift build -c release && cp .build/release/win-ninja ../assets/win-ninja",
     "build": "npm run build:swift && ray build -o dist",
